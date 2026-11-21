@@ -53,7 +53,7 @@ const KINDS = ['time', 'report', 'person', 'visit', 'territory', 'plan'];
 const must = ({ data, error }) => { if (error) throw new Error(traduz(error.message)); return data; };
 function traduz(m) {
   const t = { 'Invalid login credentials': 'E-mail ou senha incorretos', 'User already registered': 'Este e-mail já tem conta', 'Email not confirmed': 'Confirme o e-mail (veja sua caixa de entrada)',
-    'Failed to fetch': 'Sem conexão com a internet', 'New password should be different': 'A nova senha precisa ser diferente da atual', 'same_password': 'A nova senha precisa ser diferente da atual', 'not authenticated': 'Faça login novamente' };
+    'Failed to fetch': 'Sem conexão com a internet', 'Load failed': 'Sem conexão com a internet', 'NetworkError': 'Sem conexão com a internet', 'New password should be different': 'A nova senha precisa ser diferente da atual', 'same_password': 'A nova senha precisa ser diferente da atual', 'not authenticated': 'Faça login novamente' };
   for (const k in t) if (String(m).includes(k)) return t[k];
   if (/Password should be at least/i.test(m)) return 'A senha precisa de pelo menos 6 caracteres';
   if (/rate limit/i.test(m)) return 'Muitas tentativas. Aguarde um pouco.';
@@ -62,31 +62,74 @@ function traduz(m) {
 const rowToObj = r => ({ ...r.data, id: r.id });
 const stripId = o => { const { id, ...rest } = o; return rest; };
 
+// ----- modo offline: fila de alterações + cópia local -----
+const Q_KEY = 'mr_queue', C_KEY = 'mr_cache';
+const getQ = () => { try { return JSON.parse(localStorage.getItem(Q_KEY)) || []; } catch { return []; } };
+const setQ = q => { try { localStorage.setItem(Q_KEY, JSON.stringify(q)); } catch { /* cheio */ } netBadge(); };
+const isNet = e => !navigator.onLine || /Sem conexão/.test(String(e && e.message));
+function netBadge() {
+  let el = $('#net'); const n = getQ().length, off = !navigator.onLine;
+  if (!n && !off) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.id = 'net'; document.body.appendChild(el); }
+  el.textContent = off ? `Sem internet${n ? ` · ${n} alteraç${n === 1 ? 'ão pendente' : 'ões pendentes'}` : ' · usando dados salvos'}` : `Sincronizando ${n} alteraç${n === 1 ? 'ão' : 'ões'}…`;
+}
+async function runOp(o) {
+  if (o.t === 'up') must(await sb.from('records').upsert(o.row));
+  else if (o.t === 'del') must(await sb.from('records').delete().eq('id', o.id));
+  else if (o.t === 'delvisits') must(await sb.from('records').delete().eq('kind', 'visit').eq('data->>personId', o.id));
+  else if (o.t === 'set') must(await sb.from('settings').upsert({ user_id: o.uid, data: o.data }));
+}
+let flushing = false;
+async function flushQ() {
+  if (flushing || !sb) return; flushing = true;
+  try {
+    let q = getQ();
+    while (q.length) {
+      try { await runOp(q[0]); q = q.slice(1); setQ(q); }
+      catch (e) { if (isNet(e)) break; q = q.slice(1); setQ(q); toast('Uma alteração offline foi recusada pelo servidor'); }
+    }
+  } finally { flushing = false; netBadge(); }
+}
+async function exec(o) { // executa já; se estiver sem internet, guarda na fila
+  if (!getQ().length) { try { await runOp(o); return; } catch (e) { if (!isNet(e)) throw e; } }
+  setQ([...getQ(), o]);
+}
+function cacheSave() { try { const o = { uid: S.user.id, settings: S.settings }; KINDS.forEach(k => { o[k] = S[k]; }); localStorage.setItem(C_KEY, JSON.stringify(o)); } catch { /* cheio */ } }
+function useCache() {
+  try { const o = JSON.parse(localStorage.getItem(C_KEY)); if (!o || o.uid !== S.user.id) return false; S.settings = o.settings || {}; KINDS.forEach(k => { S[k] = o[k] || []; }); return true; } catch { return false; }
+}
 async function loadAll() {
-  const [st, rec] = await Promise.all([sb.from('settings').select('data').maybeSingle(), sb.from('records').select('id,kind,data').limit(50000)]);
-  S.settings = must(st)?.data || {};
-  const rows = must(rec);
-  KINDS.forEach(k => { S[k] = rows.filter(r => r.kind === k).map(rowToObj); });
+  await flushQ();
+  if (getQ().length) { if (useCache()) return; }
+  try {
+    const [st, rec] = await Promise.all([sb.from('settings').select('data').maybeSingle(), sb.from('records').select('id,kind,data').limit(50000)]);
+    S.settings = must(st)?.data || {};
+    const rows = must(rec);
+    KINDS.forEach(k => { S[k] = rows.filter(r => r.kind === k).map(rowToObj); });
+    cacheSave();
+  } catch (e) { if (isNet(e) && useCache()) { netBadge(); return; } throw e; }
 }
 async function save(kind, obj) {
   const id = obj.id || uuid();
-  must(await sb.from('records').upsert({ id, user_id: S.user.id, kind, data: stripId(obj), updated_at: new Date().toISOString() }));
+  await exec({ t: 'up', row: { id, user_id: S.user.id, kind, data: stripId(obj), updated_at: new Date().toISOString() } });
   const saved = { ...obj, id };
-  S[kind] = obj.id ? S[kind].map(x => (x.id === id ? saved : x)) : [...S[kind], saved];
+  S[kind] = obj.id && S[kind].some(x => x.id === id) ? S[kind].map(x => (x.id === id ? saved : x)) : [...S[kind], saved];
+  cacheSave();
   return saved;
 }
 async function remove(kind, id) {
-  must(await sb.from('records').delete().eq('id', id));
+  await exec({ t: 'del', id });
   S[kind] = S[kind].filter(x => x.id !== id);
   if (kind === 'person') {
-    must(await sb.from('records').delete().eq('kind', 'visit').eq('data->>personId', id));
+    await exec({ t: 'delvisits', id });
     S.visit = S.visit.filter(v => v.personId !== id);
   }
+  cacheSave();
 }
 async function saveSettings(patch) {
   const next = { ...S.settings, ...patch };
-  must(await sb.from('settings').upsert({ user_id: S.user.id, data: next }));
-  S.settings = next;
+  await exec({ t: 'set', uid: S.user.id, data: next });
+  S.settings = next; cacheSave();
 }
 async function exportAll() {
   const out = { version: 1, exported_at: new Date().toISOString(), settings: S.settings };
@@ -94,6 +137,7 @@ async function exportAll() {
   return out;
 }
 async function importAll(b) {
+  await flushQ(); if (getQ().length) throw new Error('Sem conexão com a internet');
   must(await sb.from('records').delete().eq('user_id', S.user.id));
   const rows = [];
   KINDS.forEach(k => (Array.isArray(b[k]) ? b[k] : []).forEach(r => rows.push({ id: /^[0-9a-f-]{36}$/i.test(r.id || '') ? r.id : uuid(), user_id: S.user.id, kind: k, data: stripId(r) })));
@@ -112,7 +156,7 @@ function field(f) {
   let input;
   if (f.type === 'select') input = `<select name="${f.name}">${f.options.map(([val, lab]) => `<option value="${esc(val)}" ${String(val) === String(v) ? 'selected' : ''}>${esc(lab)}</option>`).join('')}</select>`;
   else if (f.type === 'textarea') input = `<textarea name="${f.name}" rows="3">${esc(v)}</textarea>`;
-  else input = `<input type="${f.type || 'text'}" name="${f.name}" value="${esc(v)}" ${f.min != null ? `min="${f.min}"` : ''} ${f.max != null ? `max="${f.max}"` : ''} ${f.step ? `step="${f.step}"` : ''} ${f.required ? 'required' : ''} ${f.auto ? `autocomplete="${f.auto}"` : ''}>`;
+  else input = `<input type="${f.type || 'text'}" name="${f.name}" value="${esc(v)}" ${f.min != null ? `min="${f.min}"` : ''} ${f.max != null ? `max="${f.max}"` : ''} ${f.step ? `step="${f.step}"` : ''} ${f.required ? 'required' : ''} ${f.inputmode ? `inputmode="${f.inputmode}" maxlength="${f.inputmode === 'numeric' ? 4 : ''}"` : ''} ${f.auto ? `autocomplete="${f.auto}"` : ''}>`;
   return `<label class="f">${esc(f.label)}</label>${input}`;
 }
 function dialog({ title, fields = [], html = '', ok = 'Salvar', extra = [], onSubmit }) {
@@ -153,6 +197,40 @@ function monthStats(mk) {
   const visits = S.visit.filter(v => monthKey(v.date) === mk);
   const has = k => visits.filter(v => (v.kinds || []).includes(k)).length;
   return { ministry: min, ldc, total: min + ldc, studies: Number(rep.studies || 0), visits: visits.length, revisitas: visits.length ? has('revisita') : Number(rep.rv || 0), estudos: has('estudo') || Number(rep.studies || 0), videos: visits.length ? has('video') : Number(rep.videos || 0), rep };
+}
+const progressBar = (done, goal) => { const p = goal > 0 ? Math.min(100, Math.round(done / goal * 100)) : 0; return `<div class="pbar" role="progressbar" aria-valuenow="${p}" aria-valuemin="0" aria-valuemax="100"><i style="width:${p}%"></i></div><div class="sub" style="display:flex;justify-content:space-between"><span>${fmtNum(done)}h de ${fmtNum(goal)}h</span><span>${p}%</span></div>`; };
+function yearStats(sy) { // ano de serviço: set (sy-1) → ago (sy)
+  const months = Array.from({ length: 12 }, (_, i) => addMonths(`${sy - 1}-09`, i));
+  const goal = months.reduce((a, mk) => a + goalFor(mk), 0);
+  const done = months.reduce((a, mk) => a + hoursOf(monthStats(mk).total), 0);
+  const start = new Date(sy - 1, 8, 1), end = new Date(sy, 7, 31), now = new Date(); now.setHours(0, 0, 0, 0);
+  const total = Math.round((end - start) / 864e5) + 1;
+  const current = now >= start && now <= end;
+  const elapsed = current ? Math.round((now - start) / 864e5) + 1 : (now > end ? total : 0);
+  const daysLeft = current ? total - elapsed + 1 : 0;
+  const left = Math.max(0, goal - done);
+  return { goal, done, left, daysLeft, current, perDay: daysLeft ? left / daysLeft : 0, perMonth: daysLeft ? left / (daysLeft / 30.4) : 0, projected: current && elapsed > 14 ? done / elapsed * total : null };
+}
+function yearCard(sy) {
+  const y = yearStats(sy); if (!y.goal) return '';
+  return `<div class="card"><h2>Alvo do ano de serviço<span class="sub">${sy}</span></h2>${progressBar(y.done, y.goal)}
+    ${y.current ? `<div class="sub" style="margin-top:6px">${y.left > 0 ? `Faltam <b>${fmtNum(y.left)}h</b> · cerca de <b>${fmtNum(y.perMonth)}h por mês</b> (${fmtNum(y.perDay)}h por dia) até 31 de agosto.` : 'Alvo do ano atingido! 🎉'}${y.projected != null && y.left > 0 ? `<br>No ritmo atual: ~${fmtNum(y.projected)}h no ano.` : ''}</div>` : ''}</div>`;
+}
+// lembrete de fechar/enviar o relatório
+function reminderCard() {
+  const cur = monthKey(today()), prev = addMonths(cur, -1), now = new Date(), day = now.getDate();
+  const last = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const sent = S.settings.sent || {};
+  let mk = null, msg = '';
+  if (day <= 5 && !sent[prev] && monthStats(prev).total > 0) { mk = prev; msg = `Não esqueça de entregar o relatório de ${MESES[+prev.slice(5) - 1]}.`; }
+  else if (last - day <= 2 && !sent[cur]) { mk = cur; msg = last === day ? 'Hoje é o último dia do mês: feche e envie o relatório.' : `Faltam ${last - day} dia${last - day === 1 ? '' : 's'} para fechar o relatório de ${MESES[+cur.slice(5) - 1]}.`; }
+  if (!mk) return '';
+  return `<div class="card remind"><h2>🔔 Relatório do mês</h2><div>${msg}</div><div style="margin-top:8px"><button class="btn flat" data-act="remind-share" data-mk="${mk}">Compartilhar</button><button class="btn flat" data-act="remind-done" data-mk="${mk}">Já enviei</button></div></div>`;
+}
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function weekVisits() { // interessados com próxima visita marcada (atrasadas ou nos próximos 7 dias)
+  const lim = ymd(new Date(Date.now() + 7 * 864e5));
+  return S.person.filter(p => p.nextVisit && p.nextVisit <= lim).sort((a, b) => a.nextVisit.localeCompare(b.nextVisit));
 }
 function monthPlanned(mk) { return S.plan.filter(x => monthKey(x.date) === mk).reduce((a, x) => a + Number(x.minutes), 0); }
 
@@ -214,8 +292,11 @@ function viewHome() {
       <div class="row"><span>Horas no LDC</span><span class="v">${fmtDur(st.ldc)}</span></div>
       <div class="row"><span>Estudos</span><span class="v">${st.studies}</span></div>
       <div class="sub" style="margin-top:6px">Perfil: ${esc(profileName(profile()))}</div></div>
-    ${goal ? `<div class="card"><h2>Alvo de horas mensal</h2><div class="row"><span class="sub">Para atingir o alvo de ${goal} horas este mês.</span><span class="big">${fmtNum(left)}h</span></div>
+    ${reminderCard()}
+    ${goal ? `<div class="card"><h2>Alvo de horas mensal</h2>${progressBar(hoursOf(st.total), goal)}<div class="row" style="margin-top:6px"><span class="sub">Faltam para o alvo de ${goal} horas</span><span class="big">${fmtNum(left)}h</span></div>
       <div class="sub">${left > 0 ? `Cerca de ${fmtNum(left / daysLeft)}h por dia nos ${daysLeft} dias restantes.` : 'Alvo atingido! 🎉'}</div></div>` : ''}
+    ${yearCard(serviceYearOf(mk))}
+    ${(() => { const wv = weekVisits(); return wv.length ? `<div class="card"><h2>Visitar esta semana<span class="sub">${wv.length}</span></h2>${wv.slice(0, 6).map(p => `<div class="row" data-act="open-person" data-id="${p.id}" style="cursor:pointer"><span>${esc(p.name)}</span><span class="${p.nextVisit < today() ? 'red' : 'sub'}">${p.nextVisit < today() ? 'atrasada · ' : ''}${esc(fmtDateLong(p.nextVisit).split(' de ').slice(0, 2).join(' de '))}</span></div>`).join('')}</div>` : ''; })()}
     <div class="card"><h2>Sugestões</h2><a class="sub" href="#/backup" style="text-decoration:none"><b style="color:var(--blue)">Fazer uma cópia de segurança</b><br>Exporte seus dados para mantê-los a salvo.</a></div>`,
     fab: `<button class="fab" data-act="add-time" aria-label="Adicionar horas">+</button>`,
   });
@@ -240,8 +321,10 @@ function viewReport() {
       <div class="row"><span>Horas</span><span class="v">${goal}</span></div>
       <div class="row"><span>Horas que faltam fazer</span><span class="v">${fmtNum(left)}</span></div>
       <div class="row"><span>Horas restantes por dia</span><span class="v ${perDay > 3 ? 'red' : ''}">${fmtNum(perDay)}</span></div>
+      ${goal ? `<div style="margin-top:6px">${progressBar(hoursOf(st.total), goal)}</div>` : ''}
       <div class="sec">Perfil <button class="pen" data-act="edit-profile">✎</button></div><div>${esc(profileName(profile()))}</div>
-      <div style="margin-top:20px"><button class="btn full" data-act="share">Compartilhar relatório</button></div>`;
+      <div style="margin-top:20px"><button class="btn full" data-act="share">Compartilhar relatório</button></div>
+      <div style="margin-top:10px"><button class="btn flat full" data-act="toggle-sent">${(S.settings.sent || {})[reportMonth] ? '✓ Relatório enviado (desfazer)' : 'Marcar como enviado'}</button></div>`;
   } else if (reportTab === 'list') {
     const items = S.time.filter(x => monthKey(x.date) === reportMonth).sort((a, b) => b.date.localeCompare(a.date));
     body = `${nav}${items.length ? `<div class="card list">${items.map(x => `<div class="item" data-act="edit-time" data-id="${x.id}"><div class="mid"><div class="nm"><span>${fmtDateLong(x.date)}</span><span>${fmtDur(x.minutes)}</span></div>
@@ -252,7 +335,7 @@ function viewReport() {
     const rows = months.map(mk => { const s = monthStats(mk); tot += s.total; ld += s.ldc; stu += s.studies;
       return `<div class="row"><span style="text-transform:capitalize">${MESES[+mk.slice(5) - 1]}</span><span class="v">${fmtDur(s.total)}${s.studies ? ` · ${s.studies} est.` : ''}</span></div>`; }).join('');
     body = `<div class="monthnav"><button data-act="yprev">‹</button><b>Ano de serviço ${sy}</b><button data-act="ynext">›</button></div>
-      <div class="card">${rows}<div class="row" style="border-top:1px solid var(--line);font-weight:700"><span>Total</span><span class="v">${fmtDur(tot)}</span></div>
+      ${yearCard(sy)}<div class="card">${rows}<div class="row" style="border-top:1px solid var(--line);font-weight:700"><span>Total</span><span class="v">${fmtDur(tot)}</span></div>
       <div class="row sub"><span>Horas no LDC</span><span class="v">${fmtDur(ld)}</span></div><div class="row sub"><span>Estudos individuais</span><span class="v">${stu}</span></div></div>`;
   }
   return shell({
@@ -309,26 +392,31 @@ function viewChart() {
   });
 }
 
-let peopleQuery = '', peopleSearchOpen = false;
+let peopleQuery = '', peopleSearchOpen = false, peopleFilter = 'all';
+const PFILTERS = [['all', 'Todos'], ['week', 'Visitar'], ['d30', 'Sem visita +30 dias'], ['d60', '+60 dias'], ['d90', '+90 dias']];
 function personVisits(id) { return S.visit.filter(v => v.personId === id).sort((a, b) => b.date.localeCompare(a.date)); }
 const personColor = id => PALETTE[[...id].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length];
 function viewPeople() {
   const q = peopleQuery.toLowerCase();
   let list = S.person.map(p => ({ ...p, last: (personVisits(p.id)[0] || {}).date || p.created || '', n: personVisits(p.id).length }));
   if (q) list = list.filter(p => [p.name, p.address, p.bairro, p.notes, p.phone].join(' ').toLowerCase().includes(q));
+  if (peopleFilter === 'week') { const ids = new Set(weekVisits().map(p => p.id)); list = list.filter(p => ids.has(p.id)); }
+  else if (/^d\d+$/.test(peopleFilter)) { const lim = ymd(new Date(Date.now() - +peopleFilter.slice(1) * 864e5)); list = list.filter(p => p.last && p.last <= lim); }
   const groups = {};
   list.forEach(p => { (groups[p.bairro || 'Outros'] ||= []).push(p); });
   const names = Object.keys(groups).sort((a, b) => (a === 'Outros') - (b === 'Outros') * 1 || a.localeCompare(b)).sort((a, b) => (b === 'Outros') - (a === 'Outros'));
-  const body = `${peopleSearchOpen ? `<div class="searchbar"><input type="search" id="pq" placeholder="Buscar nome, endereço, bairro…" value="${esc(peopleQuery)}"></div>` : ''}
+  const body = `<div class="chips">${PFILTERS.map(([k, l]) => `<button class="chip ${peopleFilter === k ? 'on' : ''}" data-act="pfilter" data-v="${k}">${l}</button>`).join('')}</div>
+    ${peopleSearchOpen ? `<div class="searchbar"><input type="search" id="pq" placeholder="Buscar nome, endereço, bairro…" value="${esc(peopleQuery)}"></div>` : ''}
     ${names.length ? names.map(n => `<div class="group">${esc(n)}</div><div class="list">${groups[n].sort((a, b) => b.last.localeCompare(a.last)).map(p => `
       <div class="item" data-act="open-person" data-id="${p.id}"><div class="avatar" style="background:${personColor(p.id)}">${esc((p.name || '?')[0].toUpperCase())}${p.n ? `<i>${p.n}</i>` : ''}</div>
-      <div class="mid"><div class="nm"><span>${esc(p.name)}</span><small>${p.last ? esc(fmtDateLong(p.last)) : ''}</small></div><div class="ad">${esc(p.address || '')}</div><div class="nt">${esc(p.notes || '')}</div></div></div>`).join('')}</div>`).join('')
-      : '<div class="empty">Nenhum interessado ainda.<br>Toque no botão + para adicionar.</div>'}`;
+      <div class="mid"><div class="nm"><span>${esc(p.name)}</span><small>${p.last ? esc(fmtDateLong(p.last)) : ''}</small></div><div class="ad">${esc(p.address || '')}</div><div class="nt">${p.nextVisit ? `<span class="tag">Próx.: ${esc(p.nextVisit.split('-').reverse().slice(0, 2).join('/'))}</span>` : ''}${esc(p.notes || '')}</div></div>${p.address ? `<a class="mapbtn" href="${mapLink((p.address || '') + ' ' + (p.bairro || ''))}" target="_blank" rel="noopener" aria-label="Abrir no mapa">${ICON.map}</a>` : ''}</div>`).join('')}</div>`).join('')
+      : `<div class="empty">${peopleFilter !== 'all' || q ? 'Nenhum interessado neste filtro.' : 'Nenhum interessado ainda.<br>Toque no botão + para adicionar.'}</div>`}`;
   return shell({ title: 'Interessados', right: `<button class="ib" data-act="people-search">${ICON.search}</button><button class="ib" data-act="add-person">${ICON.user}</button>`, body });
 }
 function mapLink(addr) {
   const q = encodeURIComponent(addr);
-  return S.settings.osm ? `https://www.openstreetmap.org/search?query=${q}` : `https://www.google.com/maps/search/?api=1&query=${q}`;
+  if (S.settings.osm) return `https://www.openstreetmap.org/search?query=${q}`;
+  return IS_IOS ? `https://maps.apple.com/?q=${q}` : `https://www.google.com/maps/search/?api=1&query=${q}`;
 }
 const VISIT_KINDS = [['revisita', 'Revisita'], ['estudo', 'Estudo bíblico'], ['video', 'Vídeo mostrado'], ['primeira', 'Primeira visita'], ['ausente', 'Não estava']];
 function viewPerson(id) {
@@ -338,8 +426,9 @@ function viewPerson(id) {
   return shell({
     left: 'back', title: p.name, right: `<button class="ib" data-act="edit-person" data-id="${id}">✎</button>`, tabs: true,
     body: `<div class="card"><div class="row"><span class="sub">Endereço</span></div><div>${esc(p.address || '—')}${p.bairro ? ` <span class="tag">${esc(p.bairro)}</span>` : ''}</div>
-      ${p.address ? `<p><a href="${mapLink((p.address || '') + ' ' + (p.bairro || ''))}" target="_blank" rel="noopener" style="color:var(--pink-d)">Abrir no mapa</a></p>` : ''}
-      ${p.phone ? `<div class="row"><span class="sub">Telefone</span></div><div><a href="tel:${esc(p.phone)}" style="color:var(--pink-d)">${esc(p.phone)}</a></div>` : ''}
+      ${p.address ? `<p><a class="btn flat" href="${mapLink((p.address || '') + ' ' + (p.bairro || ''))}" target="_blank" rel="noopener">${IS_IOS && !S.settings.osm ? 'Abrir no Mapas' : 'Abrir no mapa'}</a></p>` : ''}
+      ${p.phone ? `<div class="row"><span class="sub">Telefone</span></div><div><a class="btn flat" href="tel:${esc(p.phone)}">Ligar ${esc(p.phone)}</a></div>` : ''}
+      ${p.nextVisit ? `<div class="row"><span class="sub">Próxima visita</span></div><div class="${p.nextVisit < today() ? 'red' : ''}">${esc(fmtDateLong(p.nextVisit))}</div>` : ''}
       ${p.notes ? `<div class="row"><span class="sub">Anotações</span></div><div style="white-space:pre-wrap">${esc(p.notes)}</div>` : ''}</div>
       <div class="sec">Visitas (${vs.length})</div>
       ${vs.length ? `<div class="card list">${vs.map(v => `<div class="item" data-act="edit-visit" data-id="${v.id}"><div class="mid"><div class="nm"><span>${fmtDateLong(v.date)}</span></div><div class="nt">${(v.kinds || []).map(k => `<span class="tag">${esc((VISIT_KINDS.find(x => x[0] === k) || [k, k])[1])}</span>`).join('')}${esc(v.note || '')}</div></div></div>`).join('')}</div>` : '<div class="empty">Nenhuma visita registrada.</div>'}
@@ -354,7 +443,10 @@ function viewTerritory() {
     title: 'Território', body: list.length ? `<div class="cardlist">${list.map(t => {
       const days = t.lastWorked ? Math.floor((Date.now() - parseYmd(t.lastWorked)) / 864e5) : null;
       return `<div class="card" data-act="edit-territory" data-id="${t.id}"><h2>${esc(t.name)}<span class="pill ${days == null || days > 180 ? 'warn' : ''}">${days == null ? 'nunca trabalhado' : days === 0 ? 'hoje' : `há ${days} dia${days === 1 ? '' : 's'}`}</span></h2>
-      ${t.assignee ? `<div class="sub">Responsável: ${esc(t.assignee)}</div>` : ''}<div class="sub" style="white-space:pre-wrap">${esc(t.notes || '')}</div>
+      ${t.assignee ? `<div class="sub">Responsável: ${esc(t.assignee)}</div>` : ''}
+      ${t.assigned || t.returned ? `<div class="sub">${t.assigned ? `Início: ${esc(fmtDateLong(t.assigned))}` : ''}${t.assigned && t.returned ? ' · ' : ''}${t.returned ? `Fim: ${esc(fmtDateLong(t.returned))}` : ''}</div>` : ''}
+      ${(t.blocks || []).length ? `<div class="sub" style="margin-top:6px">Quadras: ${t.blocks.filter(b => b.done).length}/${t.blocks.length} trabalhadas</div><div class="chips" style="margin:4px 0">${t.blocks.map((b, i) => `<button class="chip ${b.done ? 'on' : ''}" data-act="terr-block" data-id="${t.id}" data-i="${i}">${esc(b.n)}</button>`).join('')}</div>` : ''}
+      <div class="sub" style="white-space:pre-wrap">${esc(t.notes || '')}</div>
       ${t.lastWorked ? `<div class="sub">Último trabalho: ${fmtDateLong(t.lastWorked)}</div>` : ''}
       <div style="margin-top:6px"><button class="btn flat" data-act="terr-today" data-id="${t.id}">Marcar como trabalhado hoje</button></div></div>`; }).join('')}</div>` : '<div class="empty">Nenhum cartão de território.<br>Toque em + para adicionar.</div>',
     fab: `<button class="fab" data-act="add-territory">+</button>`,
@@ -418,6 +510,12 @@ function viewHelp() {
     <b>Agenda</b> — planeje horas por dia no calendário.<br><br>
     <b>Instalar no iPhone</b> — abra no Safari, toque em Compartilhar e escolha “Adicionar à Tela de Início”. Faça o login de novo dentro do app instalado.</div></div>` });
 }
+let bkList = null;
+async function loadBackups() { try { bkList = must(await sb.from('backups').select('id,created_at,auto').order('created_at', { ascending: false })); } catch { bkList = []; } if (route().name === 'backup') render(); }
+async function autoBackup() { // garante pelo menos uma cópia a cada 7 dias, mesmo que o agendamento do servidor falhe
+  try { const r = must(await sb.from('backups').select('created_at').order('created_at', { ascending: false }).limit(1)); const has = S.time.length + S.person.length + S.report.length > 0;
+    if (has && (!r.length || Date.now() - new Date(r[0].created_at) > 7 * 864e5)) must(await sb.rpc('snapshot_my_backup', { is_auto: true })); } catch { /* sem rede */ }
+}
 function viewBackup() {
   return shell({ left: 'back', title: 'Cópia de Segurança', body: `
     <div class="card"><h2>Backup (.mabackup)</h2><p class="sub">Mesmo formato do Ministry Assistant: interessados, visitas, relatórios mensais e horas diárias. Pode ser restaurado aqui ou no app original.</p>
@@ -425,7 +523,11 @@ function viewBackup() {
     <div class="card"><h2>Restaurar</h2><p class="sub">Escolha um arquivo .mabackup (ou o JSON completo).</p>
       <label class="btn full filelbl">Escolher arquivo…<input type="file" id="impfile" class="filein"></label></div>
     <div class="card"><h2>Cópia completa (JSON)</h2><p class="sub">Inclui tudo deste app, também as horas no LDC, territórios e agenda planejada, que o formato .mabackup não guarda.</p>
-      <button class="btn flat" data-act="export">Exportar JSON</button></div>` });
+      <button class="btn flat" data-act="export">Exportar JSON</button></div>
+    <div class="card"><h2>Cópias automáticas</h2><p class="sub">O servidor guarda uma cópia por semana (as últimas 8). Você também pode criar uma agora.</p>
+      <button class="btn flat" data-act="bk-now">Criar cópia agora</button>
+      ${bkList === null ? '<div class="sub">Carregando…</div>' : bkList.length ? bkList.map(b => `<div class="row"><div>${esc(new Date(b.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }))}<div class="sub">${b.auto ? 'automática' : 'manual'}</div></div>
+        <div><button class="btn flat" data-act="bk-dl" data-id="${b.id}">Baixar</button><button class="btn flat" data-act="bk-restore" data-id="${b.id}">Restaurar</button></div></div>`).join('') : '<div class="sub">Nenhuma cópia ainda.</div>'}</div>` });
 }
 function viewSettings() {
   const tg = (k, on) => `<button class="tg ${on ? 'on' : ''}" data-act="toggle" data-k="${k}" aria-pressed="${on}"></button>`;
@@ -434,7 +536,11 @@ function viewSettings() {
       <div class="row"><div>Perfil<div class="sub">${esc(profileName(profile()))}</div></div><button class="btn flat" data-act="edit-profile">Alterar</button></div>
       <div class="row"><div>Cronômetro de serviço<div class="sub">Mostrar cartão de horas</div></div>${tg('timer', S.settings.timer !== false)}</div>
       <div class="row"><div>Primeiro dia da semana<div class="sub">Ligado = domingo; desligado = segunda</div></div>${tg('sunday', S.settings.weekStart !== 1)}</div>
-      <div class="row"><div>Usar o Open Street Map<div class="sub">Em vez do Google Maps</div></div>${tg('osm', !!S.settings.osm)}</div></div>
+      <div class="row"><div>Usar o Open Street Map<div class="sub">Em vez do app Mapas / Google Maps</div></div>${tg('osm', !!S.settings.osm)}</div></div>
+    <div class="card"><h2>Aparência e segurança</h2>
+      <div class="row"><div>Tema</div><div class="seg2">${[['auto', 'Auto'], ['light', 'Claro'], ['dark', 'Escuro']].map(([k, l]) => `<button class="${getTheme() === k ? 'on' : ''}" data-act="theme" data-v="${k}">${l}</button>`).join('')}</div></div>
+      <div class="row"><div>Bloqueio por PIN<div class="sub">${pinCfg() ? 'Ativado neste aparelho' : 'Pede um PIN de 4 dígitos ao abrir o app'}</div></div>
+        <div>${pinCfg() ? '<button class="btn flat" data-act="pin-change">Alterar</button><button class="btn flat" data-act="pin-off">Desativar</button>' : '<button class="btn flat" data-act="pin-on">Ativar</button>'}</div></div></div>
     <div class="card"><h2>Conta</h2><div class="sub">E-mail: <b>${esc(S.user.username)}</b></div>
       <div style="margin-top:8px"><button class="btn flat" data-act="edit-name">Alterar nome</button><button class="btn flat" data-act="change-pw">Alterar senha</button><button class="btn flat" data-act="change-email">Alterar e-mail</button></div></div>
     <div class="card"><h2>Zona de perigo</h2><p class="sub">Excluir a conta apaga para sempre todos os seus dados (horas, interessados, visitas, territórios, agenda).</p>
@@ -468,6 +574,7 @@ function render() {
     <a data-act="go-chart">Gráfico anual</a><a data-act="go-year">Ano de serviço</a></div>` : '');
   if ($('#main')) $('#main').scrollTop = scroll;
   const pq = $('#pq'); if (pq) { pq.oninput = e => { peopleQuery = e.target.value; const pos = e.target.selectionStart; render(); const n = $('#pq'); n.focus(); n.setSelectionRange(pos, pos); }; }
+  if (r.name === 'backup' && bkList === null && navigator.onLine) loadBackups();
   clearInterval(tickInterval);
   if (r.name === 'home' && $('#tclock')) tickInterval = setInterval(() => { const c = $('#tclock'); if (c) c.textContent = fmtClock(timer.elapsed()); }, 1000);
 }
@@ -498,7 +605,8 @@ function personDialog(p) {
     title: p.id ? 'Editar interessado' : 'Novo interessado',
     html: bairros.length ? `<datalist id="bl">${bairros.map(b => `<option value="${esc(b)}">`).join('')}</datalist>` : '',
     fields: [{ name: 'name', label: 'Nome', value: p.name, required: true }, { name: 'address', label: 'Endereço', value: p.address },
-      { name: 'bairro', label: 'Bairro', value: p.bairro }, { name: 'phone', label: 'Telefone', type: 'text', value: p.phone },
+      { name: 'bairro', label: 'Bairro', value: p.bairro }, { name: 'phone', label: 'Telefone', type: 'tel', value: p.phone },
+      { name: 'nextVisit', label: 'Próxima visita (opcional)', type: 'date', value: p.nextVisit },
       { name: 'notes', label: 'Anotações', type: 'textarea', value: p.notes }],
     onSubmit: async v => { await save('person', { ...p, ...v, name: v.name.trim(), created: p.created || today(), maId: p.maId || randomLongStr() }); render(); },
   }).then(r => { const l = $('#bl'); if (l) l.remove(); return r; });
@@ -508,9 +616,16 @@ function visitDialog(personId, v) {
   return dialog({
     title: v.id ? 'Editar visita' : 'Nova visita', fields: [{ name: 'date', label: 'Data', type: 'date', value: v.date, required: true },
       ...VISIT_KINDS.map(([k, l]) => ({ name: 'k_' + k, label: l, type: 'check', value: (v.kinds || []).includes(k) })),
-      { name: 'note', label: 'Anotações', type: 'textarea', value: v.note }],
+      { name: 'note', label: 'Anotações', type: 'textarea', value: v.note },
+      { name: 'next', label: 'Próxima visita (opcional)', type: 'date', value: (S.person.find(x => x.id === personId) || {}).nextVisit }],
     extra: v.id ? [{ label: 'Apagar', run: async () => { await remove('visit', v.id); render(); } }] : [],
-    onSubmit: async f => { await save('visit', { ...v, personId, date: f.date, note: f.note, kinds: VISIT_KINDS.map(x => x[0]).filter(k => f['k_' + k]) }); render(); },
+    onSubmit: async f => {
+      await save('visit', { ...v, personId, date: f.date, note: f.note, kinds: VISIT_KINDS.map(x => x[0]).filter(k => f['k_' + k]) });
+      const p = S.person.find(x => x.id === personId);
+      if (p && (f.next || '') !== (p.nextVisit || '')) await save('person', { ...p, nextVisit: f.next || '' });
+      else if (p && !v.id && p.nextVisit && !f.next && p.nextVisit <= f.date) await save('person', { ...p, nextVisit: '' });
+      render();
+    },
   });
 }
 function territoryDialog(t) {
@@ -518,9 +633,17 @@ function territoryDialog(t) {
   return dialog({
     title: t.id ? 'Editar território' : 'Novo território',
     fields: [{ name: 'name', label: 'Nome / número do cartão', value: t.name, required: true }, { name: 'assignee', label: 'Responsável', value: t.assignee },
-      { name: 'lastWorked', label: 'Último dia trabalhado', type: 'date', value: t.lastWorked }, { name: 'notes', label: 'Anotações', type: 'textarea', value: t.notes }],
+      { name: 'assigned', label: 'Data de início', type: 'date', value: t.assigned }, { name: 'returned', label: 'Data de fim / devolução', type: 'date', value: t.returned },
+      { name: 'lastWorked', label: 'Último dia trabalhado', type: 'date', value: t.lastWorked },
+      { name: 'blocksText', label: 'Quadras (uma por linha)', type: 'textarea', value: (t.blocks || []).map(b => b.n).join('\n') },
+      { name: 'notes', label: 'Anotações', type: 'textarea', value: t.notes }],
     extra: t.id ? [{ label: 'Apagar', run: async () => { if (await confirmDlg('Apagar território?', t.name)) { await remove('territory', t.id); render(); } else return false; } }] : [],
-    onSubmit: async v => { await save('territory', { ...t, ...v }); render(); },
+    onSubmit: async v => {
+      const old = new Map((t.blocks || []).map(b => [b.n, b]));
+      const blocks = String(v.blocksText || '').split('\n').map(x => x.trim()).filter(Boolean).map(n => old.get(n) || { n, done: false });
+      const { blocksText, ...rest } = v;
+      await save('territory', { ...t, ...rest, blocks }); render();
+    },
   });
 }
 async function planDialog(date) {
@@ -542,6 +665,16 @@ async function planDialog(date) {
       render();
     },
   });
+}
+function pinSetDialog(change) {
+  return dialog({ title: change ? 'Novo PIN' : 'Criar PIN', ok: 'Salvar', html: '<p class="sub">4 dígitos. Vale só neste aparelho e é um bloqueio de conveniência: a senha da conta continua sendo a proteção real.</p>',
+    fields: [...(change ? [{ name: 'old', label: 'PIN atual', type: 'password', inputmode: 'numeric' }] : []), { name: 'p1', label: 'PIN (4 dígitos)', type: 'password', inputmode: 'numeric' }, { name: 'p2', label: 'Repita o PIN', type: 'password', inputmode: 'numeric' }],
+    onSubmit: async v => {
+      if (change && !(await checkPin(String(v.old)))) throw new Error('PIN atual incorreto');
+      if (!/^\d{4}$/.test(v.p1)) throw new Error('O PIN precisa ter 4 números');
+      if (v.p1 !== v.p2) throw new Error('Os PINs não conferem');
+      await setPin(v.p1); render(); toast('PIN salvo');
+    } });
 }
 async function profileDialog() {
   await dialog({ title: 'Perfil', fields: [{ name: 'profile', label: 'Perfil de serviço', type: 'select', value: profile(), options: PROFILES }],
@@ -583,6 +716,7 @@ async function readBackupFile(file) {
   try { return { kind: 'json', data: JSON.parse(new TextDecoder().decode(bytes)) }; } catch { throw new Error('Arquivo de backup não reconhecido'); }
 }
 async function importMaModel(model, mode) {
+  await flushQ(); if (getQ().length) throw new Error('Sem conexão com a internet');
   const replace = mode === 'replace';
   if (replace) must(await sb.from('records').delete().in('kind', ['person', 'visit', 'time', 'report']));
   const rows = [], uid = S.user.id, now = new Date().toISOString();
@@ -606,6 +740,8 @@ async function importMaModel(model, mode) {
 }
 function doLogout() {
   if (sb) sb.auth.signOut().catch(() => {});
+  try { localStorage.removeItem(C_KEY); localStorage.removeItem(Q_KEY); } catch {}
+  netBadge();
   S.token = null; S.user = null; S.time = S.report = S.person = S.visit = S.territory = S.plan = []; S.settings = {}; drawerOpen = false; render();
 }
 
@@ -648,6 +784,10 @@ const actions = {
   'chart-metric': el => { chartMetric = el.dataset.v; chartMenu = null; render(); },
   'chart-year': el => { const y = +el.dataset.v; chartYears.has(y) ? chartYears.delete(y) : chartYears.add(y); render(); },
   'people-search': () => { peopleSearchOpen = !peopleSearchOpen; if (!peopleSearchOpen) peopleQuery = ''; render(); const q = $('#pq'); if (q) q.focus(); },
+  pfilter: el => { peopleFilter = el.dataset.v; render(); },
+  'remind-share': el => { reportMonth = el.dataset.mk; return actions.share(); },
+  'remind-done': async el => { await saveSettings({ sent: { ...(S.settings.sent || {}), [el.dataset.mk]: true } }); render(); toast('Marcado como enviado'); },
+  'toggle-sent': async () => { const sent = { ...(S.settings.sent || {}) }; if (sent[reportMonth]) delete sent[reportMonth]; else sent[reportMonth] = true; await saveSettings({ sent }); render(); },
   'add-person': () => personDialog(),
   'open-person': el => go('person/' + el.dataset.id),
   'edit-person': el => personDialog(S.person.find(x => x.id === el.dataset.id)),
@@ -657,6 +797,20 @@ const actions = {
   'add-territory': () => territoryDialog(),
   'edit-territory': el => territoryDialog(S.territory.find(x => x.id === el.dataset.id)),
   'terr-today': async el => { const t = S.territory.find(x => x.id === el.dataset.id); await save('territory', { ...t, lastWorked: today() }); render(); },
+  'terr-block': async el => { const t = S.territory.find(x => x.id === el.dataset.id), i = +el.dataset.i;
+    const blocks = t.blocks.map((b, j) => (j === i ? { ...b, done: !b.done, date: !b.done ? today() : '' } : b));
+    await save('territory', { ...t, blocks, lastWorked: !t.blocks[i].done ? today() : t.lastWorked }); render(); },
+  'bk-now': () => guard(async () => { must(await sb.rpc('snapshot_my_backup', { is_auto: false })); bkList = null; loadBackups(); render(); toast('Cópia criada'); }),
+  'bk-dl': el => guard(async () => { const d = must(await sb.from('backups').select('data,created_at').eq('id', el.dataset.id).single()); download(`meurelatorio-copia-${d.created_at.slice(0, 10)}.json`, JSON.stringify(d.data, null, 2)); }),
+  'bk-restore': el => guard(async () => {
+    if (!(await confirmDlg('Restaurar esta cópia?', 'Todos os dados atuais da conta serão substituídos pelos desta cópia.', 'Restaurar'))) return;
+    const d = must(await sb.from('backups').select('data').eq('id', el.dataset.id).single());
+    toast('Restaurando…'); await importAll(d.data); await loadAll(); render(); toast('Cópia restaurada');
+  }),
+  theme: el => { localStorage.setItem('mr_theme', el.dataset.v); applyTheme(); render(); },
+  'pin-on': () => pinSetDialog(), 'pin-change': () => pinSetDialog(true),
+  'pin-off': () => dialog({ title: 'Desativar PIN', ok: 'Desativar', fields: [{ name: 'p', label: 'PIN atual', type: 'password', inputmode: 'numeric' }],
+    onSubmit: async v => { if (!(await checkPin(String(v.p)))) throw new Error('PIN incorreto'); localStorage.removeItem(PIN_KEY); render(); toast('PIN desativado'); } }),
   'agenda-toggle': async () => { await saveSettings({ agendaFromReport: !agendaFromReport() }); render(); },
   'agenda-prev': () => { agendaOffset--; render(); }, 'agenda-next': () => { agendaOffset++; render(); },
   'plan-day': el => planDialog(el.dataset.date),
@@ -682,6 +836,7 @@ const actions = {
 
 document.addEventListener('click', e => {
   const g = e.target.closest('[data-go]'); if (g) { drawerOpen = false; go(g.dataset.go); return; }
+  if (e.target.closest('a[href^="http"], a[href^="tel:"]')) return;
   const el = e.target.closest('[data-act]'); if (!el || el.matches('input[type=checkbox]')) return;
   if (el.tagName === 'A' && el.getAttribute('href') === '#') e.preventDefault();
   if (el.matches('dialog *')) return;
@@ -731,6 +886,48 @@ document.addEventListener('submit', async e => {
 });
 window.addEventListener('hashchange', () => { drawerOpen = false; menuOpen = null; chartMenu = null; render(); window.scrollTo(0, 0); });
 
+// ---------- aparência (claro / escuro / automático) ----------
+const getTheme = () => localStorage.getItem('mr_theme') || 'auto';
+function applyTheme() {
+  const t = getTheme(), dark = t === 'dark' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+}
+applyTheme();
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
+
+// ---------- bloqueio por PIN (neste aparelho) ----------
+const PIN_KEY = 'mr_pin';
+const pinCfg = () => { try { return JSON.parse(localStorage.getItem(PIN_KEY)); } catch { return null; } };
+async function pinHash(pin, salt) { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + pin)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join(''); }
+async function setPin(pin) { const salt = uuid(); localStorage.setItem(PIN_KEY, JSON.stringify({ salt, hash: await pinHash(pin, salt) })); }
+async function checkPin(pin) { const c = pinCfg(); return !!c && (await pinHash(pin, c.salt)) === c.hash; }
+let locked = false;
+function showLock() {
+  if (!pinCfg() || locked) return; locked = true;
+  const el = document.createElement('div'); el.id = 'lock'; let val = '';
+  const draw = (msg = '') => {
+    el.innerHTML = `<img src="icons/icon-192.png" alt=""><h2>Digite o PIN</h2><div class="dots">${[0, 1, 2, 3].map(i => `<i class="${i < val.length ? 'on' : ''}"></i>`).join('')}</div><div class="lerr">${msg}</div>
+      <div class="pad">${[1, 2, 3, 4, 5, 6, 7, 8, 9, '', 0, '⌫'].map(k => k === '' ? '<span></span>' : `<button type="button" data-k="${k}">${k}</button>`).join('')}</div>
+      <button type="button" class="linkbtn" data-forgot>Esqueci o PIN (sair da conta)</button>`;
+  };
+  el.onclick = async e => {
+    if (e.target.closest('[data-forgot]')) { if (confirm('Sair da conta e remover o PIN? Depois é só entrar de novo com e-mail e senha.')) { localStorage.removeItem(PIN_KEY); el.remove(); locked = false; doLogout(); } return; }
+    const b = e.target.closest('[data-k]'); if (!b) return;
+    const k = b.dataset.k; if (k === '⌫') val = val.slice(0, -1); else if (val.length < 4) val += k;
+    draw();
+    if (val.length === 4) { if (await checkPin(val)) { el.remove(); locked = false; } else { val = ''; draw('PIN incorreto'); el.classList.add('shake'); setTimeout(() => el.classList.remove('shake'), 400); } }
+  };
+  draw(); document.body.appendChild(el);
+}
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (pinCfg() && hiddenAt && Date.now() - hiddenAt > 30000) showLock();
+  if (S.user) { flushQ().then(() => { if (route().name === 'home') render(); }); }
+});
+window.addEventListener('online', () => { netBadge(); if (S.user) flushQ().then(() => loadAll().then(render).catch(() => {})); });
+window.addEventListener('offline', netBadge);
+
 // ---------- início ----------
 const splashStart = performance.now();
 function hideSplash() {
@@ -749,6 +946,7 @@ function recoveryDialog() {
 }
 (async function init() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  showLock(); netBadge();
   const hp = new URLSearchParams(location.hash.replace(/^#\/?/, ''));
   if (hp.get('error_description')) { history.replaceState(null, '', location.pathname); setTimeout(() => toast(/expired|invalid/i.test(hp.get('error_description')) ? 'Link expirado ou inválido. Peça outro.' : hp.get('error_description')), 300); }
   if (sb) {
@@ -759,7 +957,7 @@ function recoveryDialog() {
     });
     try {
       const { data } = await sb.auth.getSession();
-      if (data.session) { S.token = data.session.access_token; S.user = sessionUser(data.session); await loadAll(); if (S.settings.displayName) S.user.name = S.settings.displayName; }
+      if (data.session) { S.token = data.session.access_token; S.user = sessionUser(data.session); await loadAll(); if (S.settings.displayName) S.user.name = S.settings.displayName; setTimeout(autoBackup, 4000); }
     } catch (e) { toast('Sem conexão com o servidor'); }
   }
   render();

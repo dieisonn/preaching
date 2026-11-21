@@ -121,3 +121,48 @@ dialog h3 { margin:0 0 4px; font-weight:500; font-size:20px; }
 
 .filelbl{position:relative;display:block;text-align:center;overflow:hidden;cursor:pointer}
 .filein{position:absolute;inset:0;width:100%;height:100%;opacity:0;font-size:16px;cursor:pointer}
+
+/* ---------- novas telas e componentes ---------- */
+.pbar { height:10px; background:var(--line); border-radius:6px; overflow:hidden; margin:6px 0 4px; }
+.pbar i { display:block; height:100%; background:linear-gradient(90deg,var(--purple),var(--pink)); border-radius:6px; transition:width .4s; }
+.card.remind { border-left:5px solid var(--pink); }
+.chips { display:flex; gap:6px; overflow-x:auto; padding:2px 0 8px; -webkit-overflow-scrolling:touch; }
+.chip { flex-shrink:0; border:1.5px solid var(--line); background:var(--card); color:var(--txt); border-radius:16px; padding:6px 12px; font-size:13px; cursor:pointer; min-height:32px; }
+.chip.on { background:var(--purple); border-color:var(--purple); color:#fff; }
+.mapbtn { width:40px; height:40px; display:grid; place-items:center; flex-shrink:0; border-radius:50%; }
+.mapbtn svg { width:22px; height:22px; fill:var(--pink-d); }
+.seg2 { display:flex; background:var(--line); border-radius:10px; padding:3px; }
+.seg2 button { border:0; background:none; color:var(--mut); padding:7px 10px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; min-height:34px; }
+.seg2 button.on { background:var(--card); color:var(--pink-d); box-shadow:0 1px 3px rgba(0,0,0,.2); }
+#net { position:fixed; top:0; left:0; right:0; z-index:9000; background:#6b5b00; color:#fff; font-size:12px; text-align:center; padding:calc(env(safe-area-inset-top) + 2px) 8px 3px; pointer-events:none; }
+#lock { position:fixed; inset:0; z-index:100000; background:var(--bg); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; padding:20px; }
+#lock img { width:72px; height:72px; border-radius:18px; box-shadow:0 4px 14px rgba(0,0,0,.25); }
+#lock h2 { margin:10px 0 0; font-weight:600; color:var(--txt); }
+#lock .dots { display:flex; gap:14px; margin:10px 0 2px; }
+#lock .dots i { width:16px; height:16px; border-radius:50%; border:2px solid var(--pink); }
+#lock .dots i.on { background:var(--pink); }
+#lock .lerr { min-height:20px; color:#d32f2f; font-size:14px; }
+#lock .pad { display:grid; grid-template-columns:repeat(3,76px); gap:14px; margin-top:6px; }
+#lock .pad button { height:76px; border-radius:50%; border:0; background:var(--card); color:var(--txt); font-size:28px; box-shadow:0 1px 4px rgba(0,0,0,.2); cursor:pointer; }
+#lock .pad button:active { background:var(--pink); color:#fff; }
+#lock .linkbtn { background:none; border:0; color:var(--pink-d); font-weight:600; padding:16px 8px; cursor:pointer; }
+#lock.shake .dots { animation:shk .35s; }
+@keyframes shk { 25% { transform:translateX(-10px); } 75% { transform:translateX(10px); } }
+.chartbox text { fill:var(--mut); } .chartbox line { stroke:var(--line); } .chartbox circle { fill:var(--card); }
+
+/* ---------- tema escuro ---------- */
+html[data-theme=dark] { color-scheme:dark; --bg:#141216; --card:#1f1c21; --txt:#ece7ea; --mut:#a79fa5; --line:#38333a; --blue:#8fa6ff; --pink-d:#f06fa5; }
+html[data-theme=dark] nav.tabs, html[data-theme=dark] .drawer, html[data-theme=dark] .cal, html[data-theme=dark] .drop, html[data-theme=dark] dialog, html[data-theme=dark] .login .panel { background:var(--card); color:var(--txt); }
+html[data-theme=dark] .card h2, html[data-theme=dark] .cal caption, html[data-theme=dark] .cal th, html[data-theme=dark] .cal td, html[data-theme=dark] .stats4, html[data-theme=dark] .stats4 svg, html[data-theme=dark] .monthnav button, html[data-theme=dark] .legend, html[data-theme=dark] .group, html[data-theme=dark] .drawer a, html[data-theme=dark] .drop a, html[data-theme=dark] .drop label, html[data-theme=dark] .item .ad { color:var(--txt); }
+html[data-theme=dark] .stats4 svg { fill:var(--txt); }
+html[data-theme=dark] .circ { border-color:var(--txt); } html[data-theme=dark] .circ svg { fill:var(--txt); }
+html[data-theme=dark] .group { background:#2a262c; }
+html[data-theme=dark] .list .item { border-color:var(--line); }
+html[data-theme=dark] .cal td { border-color:var(--line); } html[data-theme=dark] .cal td.out { background:#2a262c; color:#6b646a; }
+html[data-theme=dark] .cal td .h { color:#9fa8ff; } html[data-theme=dark] .cal td .h.done { color:#d58bd1; } html[data-theme=dark] .cal td .h.plan { color:#8f99d9; }
+html[data-theme=dark] .tag { background:#3a2430; } html[data-theme=dark] .pill { background:#1d3a27; color:#7fd69a; } html[data-theme=dark] .pill.warn { background:#3d3213; color:#f0c75e; }
+html[data-theme=dark] .login .seg { background:#2a262c; } html[data-theme=dark] .login .seg button.on { background:var(--card); }
+html[data-theme=dark] .login input { background:#2a262c; color:var(--txt); } html[data-theme=dark] .login input:focus { background:#332e35; }
+html[data-theme=dark] .login label.f { color:var(--mut); }
+html[data-theme=dark] .tg { background:#555; } html[data-theme=dark] .btn.flat { color:var(--pink-d); }
+html[data-theme=dark] .drawer svg { fill:var(--mut); }
