@@ -1,6 +1,6 @@
-// Preencha com os dados do SEU projeto Supabase (Project Settings → API).
-// A chave "anon/publishable" é pública por design; a segurança vem das regras RLS do schema.sql.
+// Dados públicos do projeto Supabase (a chave publishable é pública por design;
+// a segurança vem das regras RLS do supabase/schema.sql).
 window.APP_CONFIG = {
-  SUPABASE_URL: 'COLE_AQUI_A_PROJECT_URL',
-  SUPABASE_ANON_KEY: 'COLE_AQUI_A_ANON_KEY',
+  SUPABASE_URL: 'https://mrwnrndbnijbnocrfzpy.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_eLRYX7A4PsaoSXKZteAd0g_pRs7p-3Z',
 };
