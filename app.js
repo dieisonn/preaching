@@ -361,6 +361,12 @@ function viewTerritory() {
 }
 
 let agendaOffset = 0;
+const agendaFromReport = () => S.settings.agendaFromReport !== false;
+function dayMinutes() { // minutos realizados por dia
+  const m = {}; S.time.forEach(t => { m[t.date] = (m[t.date] || 0) + Number(t.minutes); }); return m;
+}
+// valor do dia no calendário: realizado (se "Atualizar do relatório atual") senão planejado
+function dayValue(date, done, plan) { const d = done[date] || 0, p = plan[date] ? Number(plan[date].minutes) : 0; return agendaFromReport() ? (d || p) : p; }
 function calendar(mk) {
   const [y, m] = mk.split('-').map(Number), first = new Date(y, m - 1, 1), n = new Date(y, m, 0).getDate();
   const ws = S.settings.weekStart === 1 ? 1 : 0;
@@ -370,22 +376,34 @@ function calendar(mk) {
   for (let i = 0; i < lead; i++) { const d = new Date(y, m - 1, 1 - lead + i); cells.push({ d: d.getDate(), out: true }); }
   for (let d = 1; d <= n; d++) cells.push({ d, date: `${mk}-${pad(d)}` });
   while (cells.length % 7) cells.push({ d: cells.length - lead - n + 1, out: true });
-  const plan = Object.fromEntries(S.plan.map(p => [p.date, p]));
+  const plan = Object.fromEntries(S.plan.map(p => [p.date, p])), done = dayMinutes();
+  const cell = c => {
+    if (c.out) return `<td class="out">${c.d}</td>`;
+    const d = done[c.date] || 0, p = plan[c.date] ? Number(plan[c.date].minutes) : 0;
+    const showDone = agendaFromReport() && d > 0;
+    const v = showDone ? d : p;
+    return `<td data-act="plan-day" data-date="${c.date}" class="${c.date === today() ? 'today' : ''}">${c.d}${v ? `<span class="h ${showDone ? 'done' : 'plan'}">${fmtDur(v)}</span>` : ''}</td>`;
+  };
   let rows = '';
-  for (let i = 0; i < cells.length; i += 7) rows += `<tr>${cells.slice(i, i + 7).map(c => c.out ? `<td class="out">${c.d}</td>` : `<td data-act="plan-day" data-date="${c.date}" class="${c.date === today() ? 'today' : ''}">${c.d}${plan[c.date] ? `<span class="h">${fmtDur(plan[c.date].minutes)}</span>` : ''}</td>`).join('')}</tr>`;
+  for (let i = 0; i < cells.length; i += 7) rows += `<tr>${cells.slice(i, i + 7).map(cell).join('')}</tr>`;
   return `<table class="cal"><caption>${monthLabel(mk)}</caption><tr>${names.map(d => `<th>${d}</th>`).join('')}</tr>${rows}</table>`;
 }
+function agendaTotal(fromKey, toKey) {
+  const done = dayMinutes(), plan = Object.fromEntries(S.plan.map(p => [p.date, p]));
+  const dates = new Set([...Object.keys(done), ...Object.keys(plan)]);
+  let t = 0; dates.forEach(d => { const k = monthKey(d); if (k >= fromKey && k <= toKey) t += dayValue(d, done, plan); });
+  return t;
+}
 function viewAgenda() {
-  const cur = monthKey(today()), base = addMonths(cur, agendaOffset);
-  const sy = serviceYearOf(base), yearStart = `${sy - 1}-09`, yearEnd = `${sy}-08`;
-  const yearPlanned = S.plan.filter(p => monthKey(p.date) >= yearStart && monthKey(p.date) <= yearEnd).reduce((a, p) => a + Number(p.minutes), 0);
-  const mk = base;
+  const cur = monthKey(today()), mk = addMonths(cur, agendaOffset);
+  const sy = serviceYearOf(mk), yearStart = `${sy - 1}-09`, yearEnd = `${sy}-08`; // ano de serviço: setembro → agosto
   return shell({
     title: 'Agenda para a pregação', right: `<button class="ib" data-act="agenda-prev">‹</button><button class="ib" data-act="agenda-next">›</button>`,
-    body: `<div class="card"><h2>Ano de serviço ${sy}</h2>
-      <div class="row"><span>Horas planejadas para ${MESES[+mk.slice(5) - 1]}:</span><span class="v">${fmtNum(hoursOf(monthPlanned(mk)))}/${goalFor(mk)}h</span></div>
-      <div class="row"><span>Horas planejadas para o ano de serviço:</span><span class="v">${fmtNum(hoursOf(yearPlanned))}h</span></div>
-      <div class="sub">Dica: toque em um dia para definir as horas planejadas.</div></div>
+    body: `<div class="card"><h2>Ano de serviço ${sy}<span class="sub">set. ${sy - 1} – ago. ${sy}</span></h2>
+      <div class="row"><span>Horas em ${MESES[+mk.slice(5) - 1]}:</span><span class="v">${fmtNum(hoursOf(agendaTotal(mk, mk)))}/${goalFor(mk)}h</span></div>
+      <div class="row"><span>Horas no ano de serviço:</span><span class="v">${fmtNum(hoursOf(agendaTotal(yearStart, yearEnd)))}h</span></div>
+      <label class="ck"><input type="checkbox" data-act="agenda-toggle" ${agendaFromReport() ? 'checked' : ''}> Atualizar do relatório atual</label>
+      <div class="sub">Em roxo: horas já feitas. Em azul claro: planejadas. Toque em um dia para planejar.</div></div>
       ${calendar(mk)}${calendar(addMonths(mk, 1))}`,
   });
 }
@@ -538,10 +556,12 @@ const actions = {
   reload: () => guard(async () => { await loadAll(); render(); toast('Atualizado'); }),
   'timer-toggle': () => { timer.toggle(); render(); },
   'timer-stop': () => guard(async () => {
-    const ms = timer.elapsed(); if (ms < 1000) { timer.reset(); render(); return; }
+    const ms = timer.elapsed();
+    if (ms < 1000) { timer.reset(); render(); return; }
     const min = Math.max(1, Math.round(ms / 60000));
-    const ok = await dialog({ title: 'Parar cronômetro', html: `<p class="sub">Salvar ${fmtDur(min)} em ${fmtDateLong(today())}?</p>`, ok: 'Salvar', extra: [{ label: 'Descartar', run: async () => { timer.reset(); render(); } }] });
-    if (ok) { await save('time', { date: today(), minutes: min, ldc: false, note: 'Cronômetro' }); timer.reset(); toast('Tempo salvo'); render(); }
+    const date = today(); // dia em que parou
+    await save('time', { date, minutes: min, ldc: false, note: 'Cronômetro' }); // se falhar, o cronômetro NÃO é zerado
+    timer.reset(); render(); toast(`Tempo salvo: ${fmtDur(min)}`);
   }),
   'add-time': () => timeDialog(),
   'edit-time': el => timeDialog(S.time.find(x => x.id === el.dataset.id)),
@@ -575,6 +595,7 @@ const actions = {
   'add-territory': () => territoryDialog(),
   'edit-territory': el => territoryDialog(S.territory.find(x => x.id === el.dataset.id)),
   'terr-today': async el => { const t = S.territory.find(x => x.id === el.dataset.id); await save('territory', { ...t, lastWorked: today() }); render(); },
+  'agenda-toggle': async () => { await saveSettings({ agendaFromReport: !agendaFromReport() }); render(); },
   'agenda-prev': () => { agendaOffset--; render(); }, 'agenda-next': () => { agendaOffset++; render(); },
   'plan-day': el => planDialog(el.dataset.date),
   export: () => guard(async () => { download(`ministerio-backup-${today()}.json`, JSON.stringify(await exportAll(), null, 2)); }),
