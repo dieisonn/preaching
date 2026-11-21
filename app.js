@@ -47,13 +47,13 @@ const ICON = {
 // ---------- Supabase ----------
 const CFG = window.APP_CONFIG || {};
 const CONFIGURED = CFG.SUPABASE_URL && !/COLE_AQUI/.test(CFG.SUPABASE_URL) && CFG.SUPABASE_ANON_KEY && !/COLE_AQUI/.test(CFG.SUPABASE_ANON_KEY);
-const sb = CONFIGURED ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } }) : null;
+const sb = CONFIGURED ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit' } }) : null;
 const S = { token: null, user: null, time: [], report: [], person: [], visit: [], territory: [], plan: [], settings: {} };
 const KINDS = ['time', 'report', 'person', 'visit', 'territory', 'plan'];
 const must = ({ data, error }) => { if (error) throw new Error(traduz(error.message)); return data; };
 function traduz(m) {
   const t = { 'Invalid login credentials': 'E-mail ou senha incorretos', 'User already registered': 'Este e-mail já tem conta', 'Email not confirmed': 'Confirme o e-mail (veja sua caixa de entrada)',
-    'Failed to fetch': 'Sem conexão com a internet' };
+    'Failed to fetch': 'Sem conexão com a internet', 'New password should be different': 'A nova senha precisa ser diferente da atual', 'same_password': 'A nova senha precisa ser diferente da atual', 'not authenticated': 'Faça login novamente' };
   for (const k in t) if (String(m).includes(k)) return t[k];
   if (/Password should be at least/i.test(m)) return 'A senha precisa de pelo menos 6 caracteres';
   if (/rate limit/i.test(m)) return 'Muitas tentativas. Aguarde um pouco.';
@@ -412,7 +412,9 @@ function viewSettings() {
       <div class="row"><div>Primeiro dia da semana<div class="sub">Ligado = domingo; desligado = segunda</div></div>${tg('sunday', S.settings.weekStart !== 1)}</div>
       <div class="row"><div>Usar o Open Street Map<div class="sub">Em vez do Google Maps</div></div>${tg('osm', !!S.settings.osm)}</div></div>
     <div class="card"><h2>Conta</h2><div class="sub">E-mail: <b>${esc(S.user.username)}</b></div>
-      <div style="margin-top:8px"><button class="btn flat" data-act="edit-name">Alterar nome</button><button class="btn flat" data-act="change-pw">Alterar senha</button></div></div>` });
+      <div style="margin-top:8px"><button class="btn flat" data-act="edit-name">Alterar nome</button><button class="btn flat" data-act="change-pw">Alterar senha</button><button class="btn flat" data-act="change-email">Alterar e-mail</button></div></div>
+    <div class="card"><h2>Zona de perigo</h2><p class="sub">Excluir a conta apaga para sempre todos os seus dados (horas, interessados, visitas, territórios, agenda).</p>
+      <button class="btn flat" style="color:#c0392b" data-act="delete-account">Excluir minha conta</button></div>` });
 }
 
 function viewLogin(mode = 'login') {
@@ -422,7 +424,8 @@ function viewLogin(mode = 'login') {
       ${mode === 'register' ? '<label class="f">Seu nome</label><input type="text" name="name" autocomplete="name">' : ''}
       <label class="f">E-mail</label><input type="email" name="username" autocomplete="email" autocapitalize="none" required>
       <label class="f">Senha</label><input type="password" name="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" required minlength="6">
-      <div class="err" id="lerr"></div><button class="btn full" style="margin-top:12px">${mode === 'login' ? 'Entrar' : 'Criar conta'}</button></form></div>`;
+      <div class="err" id="lerr"></div><button class="btn full" style="margin-top:12px">${mode === 'login' ? 'Entrar' : 'Criar conta'}</button>
+      ${mode === 'login' ? '<p style="text-align:center;margin-top:14px"><a href="#" data-act="forgot" style="color:var(--pink-d)">Esqueci a senha</a></p>' : ''}</form></div>`;
 }
 
 // ---------- render ----------
@@ -577,12 +580,23 @@ const actions = {
   'edit-name': () => dialog({ title: 'Seu nome', fields: [{ name: 'name', label: 'Nome', value: S.user.name }], onSubmit: async v => { S.user.name = v.name; await saveSettings({ displayName: v.name }); render(); } }),
   'change-pw': () => dialog({ title: 'Alterar senha', fields: [{ name: 'old', label: 'Senha atual', type: 'password' }, { name: 'new', label: 'Nova senha (mín. 6)', type: 'password' }],
     onSubmit: async v => { if (String(v.new).length < 6) throw new Error('A nova senha precisa de pelo menos 6 caracteres'); must(await sb.auth.signInWithPassword({ email: S.user.username, password: v.old })); must(await sb.auth.updateUser({ password: v.new })); toast('Senha alterada'); } }),
+  forgot: () => dialog({ title: 'Recuperar senha', html: '<p class="sub">Enviaremos um link para o seu e-mail.</p>', ok: 'Enviar link',
+    fields: [{ name: 'email', label: 'E-mail da conta', type: 'email', value: $('#lf [name=username]')?.value || '', required: true }],
+    onSubmit: async v => { must(await sb.auth.resetPasswordForEmail(String(v.email).trim(), { redirectTo: location.origin + location.pathname })); toast('Se o e-mail existir, o link foi enviado'); } }),
+  'change-email': () => dialog({ title: 'Alterar e-mail', html: '<p class="sub">Você receberá um link de confirmação. O e-mail só muda depois de confirmar.</p>', ok: 'Enviar',
+    fields: [{ name: 'email', label: 'Novo e-mail', type: 'email', required: true }],
+    onSubmit: async v => { must(await sb.auth.updateUser({ email: String(v.email).trim() }, { emailRedirectTo: location.origin + location.pathname })); toast('Confirme pelo link enviado ao e-mail'); } }),
+  'delete-account': () => dialog({ title: 'Excluir conta', ok: 'Excluir para sempre',
+    html: '<p class="sub">Esta ação não pode ser desfeita. Considere exportar um backup antes. Para confirmar, digite <b>EXCLUIR</b>.</p>',
+    fields: [{ name: 'c', label: 'Confirmação', required: true }],
+    onSubmit: async v => { if (String(v.c).trim().toUpperCase() !== 'EXCLUIR') throw new Error('Digite EXCLUIR para confirmar'); must(await sb.rpc('delete_my_account')); await sb.auth.signOut({ scope: 'local' }).catch(() => {}); doLogout(); toast('Conta excluída'); } }),
   lmode: el => { loginMode = el.dataset.v; render(); },
 };
 
 document.addEventListener('click', e => {
   const g = e.target.closest('[data-go]'); if (g) { drawerOpen = false; go(g.dataset.go); return; }
   const el = e.target.closest('[data-act]'); if (!el || el.matches('input[type=checkbox]')) return;
+  if (el.tagName === 'A' && el.getAttribute('href') === '#') e.preventDefault();
   if (el.matches('dialog *')) return;
   const fn = actions[el.dataset.act]; if (fn) { if (!['chart-metric-menu', 'chart-years-menu', 'report-menu'].includes(el.dataset.act) && (chartMenu || menuOpen)) { chartMenu = null; menuOpen = null; } guard(() => fn(el)); }
 });
@@ -619,14 +633,29 @@ document.addEventListener('submit', async e => {
 window.addEventListener('hashchange', () => { drawerOpen = false; menuOpen = null; chartMenu = null; render(); window.scrollTo(0, 0); });
 
 // ---------- início ----------
+function recoveryDialog() {
+  return dialog({ title: 'Definir nova senha', ok: 'Salvar senha', fields: [{ name: 'p1', label: 'Nova senha (mín. 6)', type: 'password', required: true }, { name: 'p2', label: 'Repita a nova senha', type: 'password', required: true }],
+    onSubmit: async v => {
+      if (v.p1.length < 6) throw new Error('A senha precisa de pelo menos 6 caracteres');
+      if (v.p1 !== v.p2) throw new Error('As senhas não conferem');
+      must(await sb.auth.updateUser({ password: v.p1 }));
+      toast('Senha alterada!'); setTimeout(() => { history.replaceState(null, '', location.pathname); location.reload(); }, 800);
+    } });
+}
 (async function init() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  const hp = new URLSearchParams(location.hash.replace(/^#\/?/, ''));
+  if (hp.get('error_description')) { history.replaceState(null, '', location.pathname); setTimeout(() => toast(/expired|invalid/i.test(hp.get('error_description')) ? 'Link expirado ou inválido. Peça outro.' : hp.get('error_description')), 300); }
   if (sb) {
+    // registrar antes de qualquer await para não perder o evento PASSWORD_RECOVERY
+    sb.auth.onAuthStateChange((ev, session) => {
+      if (ev === 'PASSWORD_RECOVERY') setTimeout(recoveryDialog, 0);
+      if (ev === 'SIGNED_OUT' && S.user) setTimeout(doLogout, 0);
+    });
     try {
       const { data } = await sb.auth.getSession();
       if (data.session) { S.token = data.session.access_token; S.user = sessionUser(data.session); await loadAll(); if (S.settings.displayName) S.user.name = S.settings.displayName; }
     } catch (e) { toast('Sem conexão com o servidor'); }
-    sb.auth.onAuthStateChange((ev, session) => { if (ev === 'SIGNED_OUT' && S.user) doLogout(); });
   }
   render();
 })();
