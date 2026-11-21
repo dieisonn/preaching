@@ -15,7 +15,7 @@ const DIAS = ['dom.', 'seg.', 'ter.', 'qua.', 'qui.', 'sex.', 'sáb.'];
 const monthLabel = k => { const [y, m] = k.split('-').map(Number); return `${MESES[m - 1]} ${y}`; };
 const addMonths = (k, n) => { const [y, m] = k.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
 const serviceYearOf = k => { const [y, m] = k.split('-').map(Number); return m >= 9 ? y + 1 : y; };
-const fmtDur = min => { min = Math.round(min); const h = Math.floor(min / 60), m = min % 60; return m ? `${h}:${pad(m)}h` : `${h}h`; };
+const fmtDur = min => { if (min > 0 && min < 1) return `${Math.max(1, Math.round(min * 60))}s`; min = Math.round(min); const h = Math.floor(min / 60), m = min % 60; return m ? `${h}:${pad(m)}h` : `${h}h`; };
 const fmtNum = n => (Math.round(n * 100) / 100).toString().replace('.', ',');
 const hoursOf = min => min / 60;
 const fmtDateLong = s => { const d = parseYmd(s); return `${DIAS[d.getDay()]} ${d.getDate()} de ${MES_CURTO[d.getMonth()]} de ${d.getFullYear()}`; };
@@ -479,7 +479,7 @@ function timeDialog(entry) {
     title: entry ? 'Editar tempo' : 'Adicionar tempo', ok: 'Definir',
     fields: [{ name: 'date', label: 'Data', type: 'date', value: e.date, required: true },
       { name: 'h', label: 'Horas', type: 'number', min: 0, max: 24, value: Math.floor(e.minutes / 60) },
-      { name: 'm', label: 'Minutos', type: 'number', min: 0, max: 59, value: e.minutes % 60 },
+      { name: 'm', label: 'Minutos', type: 'number', min: 0, max: 59, step: 'any', value: Math.round((e.minutes % 60) * 100) / 100 },
       { name: 'ldc', label: 'Horas no LDC (construção/projetos teocráticos)', type: 'check', value: e.ldc },
       { name: 'note', label: 'Notas', value: e.note }],
     extra: entry ? [{ label: 'Apagar', run: async () => { await remove('time', entry.id); render(); } }] : [],
@@ -524,12 +524,18 @@ function territoryDialog(t) {
   });
 }
 async function planDialog(date) {
-  const cur = S.plan.find(p => p.date === date);
+  const cur = S.plan.find(p => p.date === date), done = S.time.filter(t => t.date === date);
   await dialog({
     title: 'Definir tempo — ' + fmtDateLong(date), ok: 'Definir',
     fields: [{ name: 'h', label: 'Horas', type: 'number', min: 0, max: 24, value: cur ? Math.floor(cur.minutes / 60) : 1 },
       { name: 'm', label: 'Minutos', type: 'number', min: 0, max: 59, value: cur ? cur.minutes % 60 : 0 }, { name: 'note', label: 'Notas', value: cur?.note }],
-    extra: cur ? [{ label: 'Limpar', run: async () => { await remove('plan', cur.id); render(); } }] : [],
+    html: done.length ? `<p class="sub">Registrado neste dia: <b>${fmtDur(done.reduce((a, x) => a + Number(x.minutes), 0))}</b></p>` : '',
+    extra: [
+      ...(cur ? [{ label: 'Limpar planejado', run: async () => { await remove('plan', cur.id); render(); } }] : []),
+      ...(done.length ? [{ label: 'Apagar horas registradas', run: async () => {
+        if (!(await confirmDlg('Apagar horas registradas?', `${fmtDateLong(date)}: ${fmtDur(done.reduce((a, x) => a + Number(x.minutes), 0))}`, 'Apagar'))) return false;
+        for (const x of done) await remove('time', x.id); render(); } }] : []),
+    ],
     onSubmit: async v => {
       const minutes = Number(v.h || 0) * 60 + Number(v.m || 0);
       if (minutes <= 0) { if (cur) await remove('plan', cur.id); } else await save('plan', { ...(cur || {}), date, minutes, note: v.note });
@@ -614,7 +620,7 @@ const actions = {
   'timer-stop': () => guard(async () => {
     const ms = timer.elapsed();
     if (ms < 1000) { timer.reset(); render(); return; }
-    const min = Math.max(1, Math.round(ms / 60000));
+    const min = Math.round(ms / 600) / 100; // minutos com 2 casas: 34 s = 0,57 min
     const date = today(); // dia em que parou
     await save('time', { date, minutes: min, ldc: false, note: 'Cronômetro' }); // se falhar, o cronômetro NÃO é zerado
     timer.reset(); render(); toast(`Tempo salvo: ${fmtDur(min)}`);
