@@ -1,5 +1,5 @@
 'use strict';
-/* Assistente do Ministério — PWA pessoal */
+/* Meu relatório — PWA pessoal */
 
 // ---------- utilidades ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -202,7 +202,7 @@ function viewHome() {
   const dl = new Date(); const daysLeft = new Date(dl.getFullYear(), dl.getMonth() + 1, 0).getDate() - dl.getDate() + 1;
   const nextVisits = S.person.length;
   return shell({
-    title: 'Assistente do Ministério', right: `<button class="ib" data-act="go-people-search">${ICON.search}</button><button class="ib" data-act="reload">${ICON.sync}</button>`,
+    title: 'Meu relatório', right: `<button class="ib" data-act="go-people-search">${ICON.search}</button><button class="ib" data-act="reload">${ICON.sync}</button>`,
     body: `
     ${showTimer ? `<div class="card"><h2>Cronômetro de serviço</h2><div class="timer">
       <button class="circ" data-act="timer-toggle" id="tbtn">${timer.running() ? ICON.pause : ICON.play}</button><span class="t" id="tclock">${fmtClock(timer.elapsed())}</span>
@@ -418,14 +418,17 @@ function viewSettings() {
 }
 
 function viewLogin(mode = 'login') {
-  return `<div class="login"><img class="logo" src="icons/icon.svg" alt=""><h1>Assistente do Ministério</h1>
-    <div class="tabsw"><button data-act="lmode" data-v="login" class="${mode === 'login' ? 'on' : ''}">Entrar</button><button data-act="lmode" data-v="register" class="${mode === 'register' ? 'on' : ''}">Criar conta</button></div>
-    <form id="lf" data-mode="${mode}">
-      ${mode === 'register' ? '<label class="f">Seu nome</label><input type="text" name="name" autocomplete="name">' : ''}
-      <label class="f">E-mail</label><input type="email" name="username" autocomplete="email" autocapitalize="none" required>
-      <label class="f">Senha</label><input type="password" name="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" required minlength="6">
-      <div class="err" id="lerr"></div><button class="btn full" style="margin-top:12px">${mode === 'login' ? 'Entrar' : 'Criar conta'}</button>
-      ${mode === 'login' ? '<p style="text-align:center;margin-top:14px"><a href="#" data-act="forgot" style="color:var(--pink-d)">Esqueci a senha</a></p>' : ''}</form></div>`;
+  const reg = mode === 'register';
+  return `<div class="login"><div class="hero"><img src="icons/icon-192.png" alt=""><h1>Meu relatório</h1><p>Suas horas, visitas e território</p></div>
+    <div class="panel"><div class="seg"><button type="button" data-act="lmode" data-v="login" class="${!reg ? 'on' : ''}">Entrar</button><button type="button" data-act="lmode" data-v="register" class="${reg ? 'on' : ''}">Criar conta</button></div>
+    <form id="lf" data-mode="${mode}" novalidate>
+      ${reg ? '<label class="f">Seu nome</label><input type="text" name="name" autocomplete="name" autocapitalize="words" enterkeyhint="next">' : ''}
+      <label class="f">E-mail</label><input type="email" name="username" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="email" enterkeyhint="next" placeholder="voce@email.com">
+      <label class="f">Senha</label><div class="pwwrap"><input type="password" name="password" autocomplete="${reg ? 'new-password' : 'current-password'}" enterkeyhint="go" placeholder="${reg ? 'mínimo 6 caracteres' : 'sua senha'}"><button type="button" class="eye" data-act="eye" aria-label="Mostrar senha">👁</button></div>
+      <div class="err" id="lerr" role="alert"></div>
+      <button class="btn" type="submit">${reg ? 'Criar conta' : 'Entrar'}</button>
+      ${!reg ? '<button type="button" class="linkbtn" data-act="forgot">Esqueci a senha</button>' : ''}</form></div>
+    <div class="foot">Seus dados ficam salvos na sua conta, só você tem acesso.</div></div>`;
 }
 
 // ---------- render ----------
@@ -590,6 +593,7 @@ const actions = {
     html: '<p class="sub">Esta ação não pode ser desfeita. Considere exportar um backup antes. Para confirmar, digite <b>EXCLUIR</b>.</p>',
     fields: [{ name: 'c', label: 'Confirmação', required: true }],
     onSubmit: async v => { if (String(v.c).trim().toUpperCase() !== 'EXCLUIR') throw new Error('Digite EXCLUIR para confirmar'); must(await sb.rpc('delete_my_account')); await sb.auth.signOut({ scope: 'local' }).catch(() => {}); doLogout(); toast('Conta excluída'); } }),
+  eye: el => { const i = $('#lf [name=password]'); const show = i.type === 'password'; i.type = show ? 'text' : 'password'; el.style.opacity = show ? 1 : .6; },
   lmode: el => { loginMode = el.dataset.v; render(); },
 };
 
@@ -620,6 +624,8 @@ document.addEventListener('submit', async e => {
   const btn = $('#lf button.btn'); btn.disabled = true;
   try {
     const email = String(fd.get('username')).trim(), password = String(fd.get('password'));
+    if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error('Digite um e-mail válido');
+    if (password.length < 6) throw new Error('A senha precisa de pelo menos 6 caracteres');
     let session;
     if (mode === 'register') {
       const d = must(await sb.auth.signUp({ email, password, options: { data: { name: String(fd.get('name') || '').trim() || email } } }));
@@ -633,6 +639,12 @@ document.addEventListener('submit', async e => {
 window.addEventListener('hashchange', () => { drawerOpen = false; menuOpen = null; chartMenu = null; render(); window.scrollTo(0, 0); });
 
 // ---------- início ----------
+const splashStart = performance.now();
+function hideSplash() {
+  const sp = $('#splash'); if (!sp) return;
+  const wait = Math.max(0, 900 - (performance.now() - splashStart));
+  setTimeout(() => { sp.classList.add('hide'); setTimeout(() => sp.remove(), 500); }, wait);
+}
 function recoveryDialog() {
   return dialog({ title: 'Definir nova senha', ok: 'Salvar senha', fields: [{ name: 'p1', label: 'Nova senha (mín. 6)', type: 'password', required: true }, { name: 'p2', label: 'Repita a nova senha', type: 'password', required: true }],
     onSubmit: async v => {
@@ -658,4 +670,5 @@ function recoveryDialog() {
     } catch (e) { toast('Sem conexão com o servidor'); }
   }
   render();
+  hideSplash();
 })();

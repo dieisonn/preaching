@@ -1,4 +1,4 @@
-# Ministério — app pessoal (PWA + Supabase)
+# Meu relatório — app pessoal (PWA + Supabase)
 
 Site estático (GitHub Pages) com login e banco de dados no Supabase. Sem servidor próprio.
 
@@ -21,3 +21,7 @@ Abra o endereço no **Safari** → Compartilhar → **Adicionar à Tela de Iníc
 - **Esqueci a senha:** tela de login → "Esqueci a senha" (link por e-mail; ao abrir o link, defina a nova senha).
 - **Alterar nome/senha/e-mail e Excluir conta:** ☰ → Configurações. Excluir apaga a conta e todos os dados.
 - No painel do Supabase (Authentication → URL Configuration), inclua o endereço do site em *Redirect URLs* para os links de e-mail funcionarem.
+
+## iPhone — tela de abertura
+Há imagens de abertura para iPhone 11 em diante (`splash/`). O iOS guarda a imagem de abertura no momento da instalação:
+se você já instalou antes, **remova o ícone e adicione de novo** à Tela de Início para ver o nome, o ícone e a tela nova.

@@ -1,5 +1,8 @@
 :root { --pink:#e8508e; --pink-d:#c43a74; --purple:#8e3a8a; --bg:#f4f1f3; --card:#fff; --txt:#333; --mut:#777; --line:#ddd; --blue:#2e4bc6; --green:#2a9d8f; }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+body { touch-action: manipulation; overscroll-behavior:none; -webkit-user-select:none; user-select:none; }
+input, textarea { -webkit-user-select:text; user-select:text; }
 html, body { margin:0; height:100%; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--txt); background:var(--bg); }
 #app { max-width: 720px; margin: 0 auto; height: 100%; display:flex; flex-direction:column; background:var(--bg); position:relative; overflow:hidden; }
 button, input, select, textarea { font: inherit; }
@@ -50,8 +53,9 @@ nav.tabs a.on { color:var(--purple); }
 .item .nt { font-size:13px; color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .group { background:#ddd; margin:10px -10px 0; padding:10px 14px; font-weight:600; color:#555; }
 .searchbar { display:flex; gap:8px; margin-bottom:8px; }
-input[type=text], input[type=password], input[type=number], input[type=date], input[type=search], select, textarea { width:100%; padding:10px 4px; border:0; border-bottom:2px solid var(--line); background:transparent; border-radius:0; outline:none; }
-input:focus, select:focus, textarea:focus { border-color:var(--pink); }
+:where(input:not([type=checkbox]):not([type=radio]):not([type=file]), select, textarea) { width:100%; font-size:16px; padding:10px 4px; border:0; border-bottom:2px solid var(--line); background:transparent; border-radius:0; outline:none; -webkit-appearance:none; appearance:none; color:var(--txt); min-height:44px; }
+input[type=date] { min-width:0; }
+:where(input, select, textarea):focus { border-color:var(--pink); }
 label.f { display:block; font-size:13px; color:var(--mut); margin-top:12px; }
 label.ck { display:flex; align-items:center; gap:10px; padding:8px 0; font-size:16px; color:var(--txt); }
 input[type=checkbox] { width:20px; height:20px; accent-color:var(--purple); }
@@ -85,15 +89,30 @@ dialog h3 { margin:0 0 4px; font-weight:500; font-size:20px; }
 .tg { position:relative; width:44px; height:24px; background:#bbb; border-radius:12px; border:0; cursor:pointer; flex-shrink:0; }
 .tg::after { content:""; position:absolute; top:2px; left:2px; width:20px; height:20px; border-radius:50%; background:#fff; transition:.2s; }
 .tg.on { background:var(--pink); } .tg.on::after { left:22px; }
-.login { padding: 40px 24px; margin:auto; width:100%; }
-.login .logo { width:84px; height:84px; margin:0 auto 12px; display:block; }
-.login h1 { text-align:center; font-weight:500; margin:0 0 24px; font-size:24px; }
-.login .tabsw { display:flex; margin-bottom:12px; }
-.login .tabsw button { flex:1; background:none; border:0; border-bottom:3px solid var(--line); padding:10px; color:var(--mut); font-weight:600; cursor:pointer; }
-.login .tabsw button.on { border-color:var(--pink); color:var(--pink-d); }
-.err { color:#c0392b; min-height:20px; margin-top:8px; font-size:14px; }
+.err { color:#c0392b; min-height:20px; margin-top:10px; font-size:14px; text-align:center; }
 .empty { text-align:center; color:var(--mut); padding:40px 16px; }
 .tag { display:inline-block; font-size:12px; background:#f3dbe7; color:var(--pink-d); border-radius:10px; padding:2px 8px; margin-right:4px; }
 .cardlist .card { cursor:pointer; }
 .pill { font-size:12px; border-radius:10px; padding:2px 8px; background:#e6f4ea; color:#1e7a3b; }
 .pill.warn { background:#fff3d6; color:#946200; }
+
+/* ---------- tela de login ---------- */
+.login { height:100%; overflow-y:auto; -webkit-overflow-scrolling:touch; display:flex; flex-direction:column; background:var(--bg); }
+.login .hero { background:linear-gradient(160deg,var(--pink) 0%,var(--pink-d) 100%); color:#fff; text-align:center; padding:calc(env(safe-area-inset-top) + 40px) 24px 72px; flex-shrink:0; }
+.login .hero img { width:84px; height:84px; border-radius:20px; box-shadow:0 6px 20px rgba(0,0,0,.25); display:block; margin:0 auto 14px; }
+.login .hero h1 { margin:0; font-size:26px; font-weight:700; letter-spacing:.2px; }
+.login .hero p { margin:6px 0 0; opacity:.9; font-size:15px; }
+.login .panel { background:#fff; margin:-44px 16px 0; border-radius:18px; padding:18px 18px 22px; box-shadow:0 6px 24px rgba(0,0,0,.12); width:auto; }
+.login .seg { display:flex; background:#f1eaee; border-radius:12px; padding:4px; margin-bottom:6px; }
+.login .seg button { flex:1; border:0; background:none; padding:11px 8px; border-radius:9px; font-weight:600; font-size:15px; color:var(--mut); cursor:pointer; min-height:44px; }
+.login .seg button.on { background:#fff; color:var(--pink-d); box-shadow:0 1px 4px rgba(0,0,0,.15); }
+.login label.f { margin-top:14px; font-size:13px; font-weight:600; color:#666; }
+.login input { background:#f6f2f4; border:1.5px solid transparent; border-radius:12px; padding:12px 14px; margin-top:4px; min-height:50px; }
+.login input:focus { border-color:var(--pink); background:#fff; }
+.login .btn { width:100%; min-height:52px; border-radius:14px; font-size:16px; margin-top:18px; box-shadow:0 3px 10px rgba(232,80,142,.35); }
+.login .btn:disabled { opacity:.6; }
+.login .linkbtn { display:block; width:100%; background:none; border:0; color:var(--pink-d); font-weight:600; font-size:15px; padding:14px 8px 4px; min-height:44px; cursor:pointer; }
+.login .foot { text-align:center; color:var(--mut); font-size:12px; padding:18px 24px calc(env(safe-area-inset-bottom) + 18px); margin-top:auto; }
+.pwwrap { position:relative; }
+.pwwrap input { padding-right:56px; }
+.pwwrap .eye { position:absolute; right:4px; top:4px; width:46px; height:46px; border:0; background:none; font-size:19px; cursor:pointer; color:#888; }
