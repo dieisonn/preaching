@@ -148,11 +148,11 @@ const goalFor = mk => (S.settings.goals && S.settings.goals[mk] != null ? Number
 function monthStats(mk) {
   const t = S.time.filter(x => monthKey(x.date) === mk);
   const ldc = t.filter(x => x.ldc).reduce((a, x) => a + Number(x.minutes), 0);
-  const min = t.filter(x => !x.ldc).reduce((a, x) => a + Number(x.minutes), 0);
   const rep = S.report.find(r => r.month === mk) || {};
+  const min = t.length ? t.filter(x => !x.ldc).reduce((a, x) => a + Number(x.minutes), 0) : Number(rep.hm || 0);
   const visits = S.visit.filter(v => monthKey(v.date) === mk);
   const has = k => visits.filter(v => (v.kinds || []).includes(k)).length;
-  return { ministry: min, ldc, total: min + ldc, studies: Number(rep.studies || 0), visits: visits.length, revisitas: has('revisita'), estudos: has('estudo'), videos: has('video'), rep };
+  return { ministry: min, ldc, total: min + ldc, studies: Number(rep.studies || 0), visits: visits.length, revisitas: visits.length ? has('revisita') : Number(rep.rv || 0), estudos: has('estudo') || Number(rep.studies || 0), videos: visits.length ? has('video') : Number(rep.videos || 0), rep };
 }
 function monthPlanned(mk) { return S.plan.filter(x => monthKey(x.date) === mk).reduce((a, x) => a + Number(x.minutes), 0); }
 
@@ -272,9 +272,10 @@ function metricValue(mk) {
 function viewChart() {
   const years = new Set();
   [...S.time, ...S.visit].forEach(x => years.add(serviceYearOf(monthKey(x.date))));
+  S.report.forEach(r => years.add(serviceYearOf(r.month)));
   years.add(serviceYearOf(monthKey(today())));
   const all = [...years].sort();
-  if (!chartYears) chartYears = new Set(all.slice(-4));
+  if (!chartYears) chartYears = new Set(all.slice(-10));
   const sel = all.filter(y => chartYears.has(y));
   const series = sel.map(y => ({ y, vals: Array.from({ length: 12 }, (_, i) => metricValue(addMonths(`${y - 1}-09`, i))) }));
   const max = Math.max(10, ...series.flatMap(s => s.vals));
@@ -293,7 +294,7 @@ function viewChart() {
   const legend = sel.map(y => `<span><i style="background:${PALETTE[all.indexOf(y) % PALETTE.length]}"></i>${y}</span>`).join('');
   const best = ([k, label]) => {
     const save = chartMetric; chartMetric = k; let b = { v: 0, mk: null };
-    const mks = new Set([...S.time, ...S.visit].map(x => monthKey(x.date)));
+    const mks = new Set([...[...S.time, ...S.visit].map(x => monthKey(x.date)), ...S.report.map(r => r.month)]);
     mks.forEach(mk => { const v = metricValue(mk); if (v > b.v) b = { v, mk }; });
     chartMetric = save;
     const [yy, mm] = (b.mk || '0-0').split('-');
@@ -316,8 +317,8 @@ function viewPeople() {
   let list = S.person.map(p => ({ ...p, last: (personVisits(p.id)[0] || {}).date || p.created || '', n: personVisits(p.id).length }));
   if (q) list = list.filter(p => [p.name, p.address, p.bairro, p.notes, p.phone].join(' ').toLowerCase().includes(q));
   const groups = {};
-  list.forEach(p => { (groups[p.bairro || 'Sem bairro'] ||= []).push(p); });
-  const names = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+  list.forEach(p => { (groups[p.bairro || 'Outros'] ||= []).push(p); });
+  const names = Object.keys(groups).sort((a, b) => (a === 'Outros') - (b === 'Outros') * 1 || a.localeCompare(b)).sort((a, b) => (b === 'Outros') - (a === 'Outros'));
   const body = `${peopleSearchOpen ? `<div class="searchbar"><input type="search" id="pq" placeholder="Buscar nome, endereço, bairro…" value="${esc(peopleQuery)}"></div>` : ''}
     ${names.length ? names.map(n => `<div class="group">${esc(n)}</div><div class="list">${groups[n].sort((a, b) => b.last.localeCompare(a.last)).map(p => `
       <div class="item" data-act="open-person" data-id="${p.id}"><div class="avatar" style="background:${personColor(p.id)}">${esc((p.name || '?')[0].toUpperCase())}${p.n ? `<i>${p.n}</i>` : ''}</div>
@@ -418,8 +419,13 @@ function viewHelp() {
     <b>Instalar no iPhone</b> — abra no Safari, toque em Compartilhar e escolha “Adicionar à Tela de Início”. Faça o login de novo dentro do app instalado.</div></div>` });
 }
 function viewBackup() {
-  return shell({ left: 'back', title: 'Cópia de Segurança', body: `<div class="card"><h2>Exportar</h2><p class="sub">Baixa um arquivo .json com todos os seus dados.</p><button class="btn full" data-act="export">Exportar dados</button></div>
-    <div class="card"><h2>Importar</h2><p class="sub">Substitui TODOS os dados da conta pelo conteúdo do arquivo.</p><button class="btn full" data-act="import">Importar arquivo…</button><input type="file" id="impfile" accept="application/json,.json" hidden></div>` });
+  return shell({ left: 'back', title: 'Cópia de Segurança', body: `
+    <div class="card"><h2>Backup (.mabackup)</h2><p class="sub">Mesmo formato do Ministry Assistant: interessados, visitas, relatórios mensais e horas diárias. Pode ser restaurado aqui ou no app original.</p>
+      <button class="btn full" data-act="export-ma">Gerar backup</button></div>
+    <div class="card"><h2>Restaurar</h2><p class="sub">Escolha um arquivo .mabackup (ou o JSON completo).</p>
+      <button class="btn full" data-act="import">Escolher arquivo…</button><input type="file" id="impfile" hidden></div>
+    <div class="card"><h2>Cópia completa (JSON)</h2><p class="sub">Inclui tudo deste app, também as horas no LDC, territórios e agenda planejada, que o formato .mabackup não guarda.</p>
+      <button class="btn flat" data-act="export">Exportar JSON</button></div>` });
 }
 function viewSettings() {
   const tg = (k, on) => `<button class="tg ${on ? 'on' : ''}" data-act="toggle" data-k="${k}" aria-pressed="${on}"></button>`;
@@ -494,7 +500,7 @@ function personDialog(p) {
     fields: [{ name: 'name', label: 'Nome', value: p.name, required: true }, { name: 'address', label: 'Endereço', value: p.address },
       { name: 'bairro', label: 'Bairro', value: p.bairro }, { name: 'phone', label: 'Telefone', type: 'text', value: p.phone },
       { name: 'notes', label: 'Anotações', type: 'textarea', value: p.notes }],
-    onSubmit: async v => { await save('person', { ...p, ...v, name: v.name.trim(), created: p.created || today() }); render(); },
+    onSubmit: async v => { await save('person', { ...p, ...v, name: v.name.trim(), created: p.created || today(), maId: p.maId || randomLongStr() }); render(); },
   }).then(r => { const l = $('#bl'); if (l) l.remove(); return r; });
 }
 function visitDialog(personId, v) {
@@ -541,6 +547,56 @@ function reportText(mk) {
 }
 function download(name, text) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+// ---------- backup .mabackup (gzip + Smile, igual ao app original) ----------
+function randomLongStr() { const b = new Uint8Array(8); crypto.getRandomValues(b); let v = 0n; for (const x of b) v = (v << 8n) | BigInt(x); return BigInt.asIntN(64, v).toString(); }
+async function pipeBytes(bytes, stream) { const w = stream.writable.getWriter(); w.write(bytes); w.close(); return new Uint8Array(await new Response(stream.readable).arrayBuffer()); }
+async function gzipBytes(bytes) { const out = await pipeBytes(bytes, new CompressionStream('gzip')); out[8] = 0; out[9] = 0xff; return out; } // cabeçalho igual ao do app original
+const gunzipBytes = bytes => pipeBytes(bytes, new DecompressionStream('gzip'));
+function buildModel() {
+  const key = p => p.maId || p.id;
+  const ids = new Map(S.person.map(p => [p.id, key(p)]));
+  return {
+    persons: S.person.map(p => ({ key: key(p), name: p.name, address: p.address || '', bairro: p.bairro || '', notes: p.notes || '', raw: p.raw || null })),
+    visits: S.visit.filter(v => ids.has(v.personId)).map(v => ({ personKey: ids.get(v.personId), date: v.date, note: v.note || '', raw: v.raw || null, idx: v.idx })),
+    times: S.time.map(t => ({ date: t.date, minutes: Number(t.minutes), note: t.note || '', ldc: !!t.ldc, raw: t.raw || null })),
+    reports: S.report.map(r => ({ month: r.month, hm: Number(r.hm || 0), studies: Number(r.studies || 0), imp: r.imp || { hm: 0, studies: 0 } })),
+    ma: S.settings.ma || {},
+  };
+}
+async function exportMaBackup() {
+  const roots = MABackup.fromModel(buildModel(), Date.now());
+  const gz = await gzipBytes(Smile.encode(roots, { multi: true }));
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([gz], { type: 'application/octet-stream' }));
+  a.download = `MABackup-${today()}.mabackup`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+}
+async function readBackupFile(file) {
+  let bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = await gunzipBytes(bytes);
+  if (bytes[0] === 0x3a && bytes[1] === 0x29 && bytes[2] === 0x0a) return { kind: 'ma', model: MABackup.toModel(Smile.decode(bytes).roots) };
+  try { return { kind: 'json', data: JSON.parse(new TextDecoder().decode(bytes)) }; } catch { throw new Error('Arquivo de backup não reconhecido'); }
+}
+async function importMaModel(model, mode) {
+  const replace = mode === 'replace';
+  if (replace) must(await sb.from('records').delete().in('kind', ['person', 'visit', 'time', 'report']));
+  const rows = [], uid = S.user.id, now = new Date().toISOString();
+  const row = (kind, data) => { const id = uuid(); rows.push({ id, user_id: uid, kind, data, updated_at: now }); return id; };
+  const haveP = new Set(replace ? [] : S.person.map(p => p.maId).filter(Boolean));
+  const haveT = new Set(replace ? [] : S.time.map(t => t.date));
+  const haveR = new Set(replace ? [] : S.report.map(r => r.month));
+  const pid = new Map();
+  for (const p of model.persons) {
+    if (haveP.has(p.key)) { const ex = S.person.find(x => x.maId === p.key); if (ex) pid.set(p.key, ex.id); continue; }
+    pid.set(p.key, row('person', { name: p.name, address: p.address, bairro: p.bairro, notes: p.notes, created: p.created || today(), maId: p.key, raw: p.raw }));
+  }
+  const newP = new Set(model.persons.filter(p => !haveP.has(p.key)).map(p => p.key));
+  for (const v of model.visits) if (newP.has(v.personKey)) row('visit', { personId: pid.get(v.personKey), date: v.date || today(), note: v.note, kinds: [], raw: v.raw, idx: v.idx });
+  for (const t of model.times) if (!haveT.has(t.date)) row('time', { date: t.date, minutes: t.minutes, ldc: false, note: t.note, raw: t.raw });
+  for (const r of model.reports) if (!haveR.has(r.month)) row('report', { month: r.month, hm: r.hm, studies: r.studies, rv: r.rv, videos: r.videos, imp: { hm: r.hm, studies: r.studies } });
+  for (let i = 0; i < rows.length; i += 400) must(await sb.from('records').upsert(rows.slice(i, i + 400)));
+  if (replace || !S.settings.ma) await saveSettings({ ma: model.ma });
+  await loadAll();
+  return { persons: newP.size, times: model.times.filter(t => !haveT.has(t.date)).length, reports: model.reports.filter(r => !haveR.has(r.month)).length };
 }
 function doLogout() {
   if (sb) sb.auth.signOut().catch(() => {});
@@ -598,7 +654,8 @@ const actions = {
   'agenda-toggle': async () => { await saveSettings({ agendaFromReport: !agendaFromReport() }); render(); },
   'agenda-prev': () => { agendaOffset--; render(); }, 'agenda-next': () => { agendaOffset++; render(); },
   'plan-day': el => planDialog(el.dataset.date),
-  export: () => guard(async () => { download(`ministerio-backup-${today()}.json`, JSON.stringify(await exportAll(), null, 2)); }),
+  'export-ma': () => guard(async () => { await exportMaBackup(); toast('Backup gerado'); }),
+  export: () => guard(async () => { download(`meurelatorio-completo-${today()}.json`, JSON.stringify(await exportAll(), null, 2)); }),
   import: () => $('#impfile').click(),
   toggle: async el => { const k = el.dataset.k; const patch = k === 'sunday' ? { weekStart: S.settings.weekStart === 1 ? 0 : 1 } : { [k]: k === 'timer' ? S.settings.timer === false : !S.settings[k] }; await saveSettings(patch); render(); },
   'edit-name': () => dialog({ title: 'Seu nome', fields: [{ name: 'name', label: 'Nome', value: S.user.name }], onSubmit: async v => { S.user.name = v.name; await saveSettings({ displayName: v.name }); render(); } }),
@@ -630,10 +687,20 @@ document.addEventListener('change', e => {
   if (el && el.matches('input[type=checkbox]') && actions[el.dataset.act]) { guard(() => actions[el.dataset.act](el)); return; }
   if (e.target.id === 'impfile' && e.target.files[0]) {
     const f = e.target.files[0]; e.target.value = '';
-    f.text().then(async txt => {
-      let data; try { data = JSON.parse(txt); } catch { return toast('Arquivo inválido'); }
-      if (!(await confirmDlg('Importar dados?', 'Todos os dados atuais da conta serão substituídos.', 'Importar'))) return;
-      await guard(async () => { await importAll(data); await loadAll(); render(); toast('Dados importados'); });
+    guard(async () => {
+      const bk = await readBackupFile(f);
+      if (bk.kind === 'json') {
+        if (!(await confirmDlg('Importar dados?', 'Todos os dados atuais da conta serão substituídos.', 'Importar'))) return;
+        await importAll(bk.data); await loadAll(); render(); toast('Dados importados'); return;
+      }
+      const m = bk.model;
+      const r = await dialog({ title: 'Restaurar backup', ok: 'Restaurar',
+        html: `<p class="sub">O arquivo contém <b>${m.persons.length}</b> interessados, <b>${m.visits.length}</b> visitas, <b>${m.times.length}</b> dias de horas e <b>${m.reports.length}</b> relatórios mensais.</p>`,
+        fields: [{ name: 'mode', label: 'Como restaurar', type: 'select', value: 'replace', options: [['replace', 'Substituir (apaga interessados, horas e relatórios atuais)'], ['merge', 'Mesclar (só adiciona o que ainda não existe)']] }] });
+      if (!r) return;
+      toast('Restaurando…');
+      const res = await importMaModel(m, r.mode); render();
+      toast(`Pronto: ${res.persons} interessados, ${res.times} dias, ${res.reports} relatórios`);
     });
   }
 });

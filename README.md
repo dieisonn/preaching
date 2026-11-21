@@ -25,3 +25,8 @@ Abra o endereço no **Safari** → Compartilhar → **Adicionar à Tela de Iníc
 ## iPhone — tela de abertura
 Há imagens de abertura para iPhone 11 em diante (`splash/`). O iOS guarda a imagem de abertura no momento da instalação:
 se você já instalou antes, **remova o ícone e adicione de novo** à Tela de Início para ver o nome, o ícone e a tela nova.
+
+## Backup .mabackup
+Formato idêntico ao do Ministry Assistant (gzip + JSON binário Smile): interessados e visitas, relatórios mensais, horas diárias e listas.
+☰ → Cópia de Segurança → **Gerar backup** / **Escolher arquivo…** (substituir ou mesclar).
+Não fazem parte do formato (ficam só no "JSON completo"): horas no LDC, territórios, agenda planejada, telefone e tipo de visita.
