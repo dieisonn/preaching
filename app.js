@@ -423,7 +423,7 @@ function viewBackup() {
     <div class="card"><h2>Backup (.mabackup)</h2><p class="sub">Mesmo formato do Ministry Assistant: interessados, visitas, relatórios mensais e horas diárias. Pode ser restaurado aqui ou no app original.</p>
       <button class="btn full" data-act="export-ma">Gerar backup</button></div>
     <div class="card"><h2>Restaurar</h2><p class="sub">Escolha um arquivo .mabackup (ou o JSON completo).</p>
-      <button class="btn full" data-act="import">Escolher arquivo…</button><input type="file" id="impfile" hidden></div>
+      <label class="btn full filelbl">Escolher arquivo…<input type="file" id="impfile" class="filein"></label></div>
     <div class="card"><h2>Cópia completa (JSON)</h2><p class="sub">Inclui tudo deste app, também as horas no LDC, territórios e agenda planejada, que o formato .mabackup não guarda.</p>
       <button class="btn flat" data-act="export">Exportar JSON</button></div>` });
 }
@@ -656,7 +656,6 @@ const actions = {
   'plan-day': el => planDialog(el.dataset.date),
   'export-ma': () => guard(async () => { await exportMaBackup(); toast('Backup gerado'); }),
   export: () => guard(async () => { download(`meurelatorio-completo-${today()}.json`, JSON.stringify(await exportAll(), null, 2)); }),
-  import: () => $('#impfile').click(),
   toggle: async el => { const k = el.dataset.k; const patch = k === 'sunday' ? { weekStart: S.settings.weekStart === 1 ? 0 : 1 } : { [k]: k === 'timer' ? S.settings.timer === false : !S.settings[k] }; await saveSettings(patch); render(); },
   'edit-name': () => dialog({ title: 'Seu nome', fields: [{ name: 'name', label: 'Nome', value: S.user.name }], onSubmit: async v => { S.user.name = v.name; await saveSettings({ displayName: v.name }); render(); } }),
   'change-pw': () => dialog({ title: 'Alterar senha', fields: [{ name: 'old', label: 'Senha atual', type: 'password' }, { name: 'new', label: 'Nova senha (mín. 6)', type: 'password' }],

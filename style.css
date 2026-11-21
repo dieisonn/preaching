@@ -118,3 +118,6 @@ dialog h3 { margin:0 0 4px; font-weight:500; font-size:20px; }
 .pwwrap { position:relative; }
 .pwwrap input { padding-right:56px; }
 .pwwrap .eye { position:absolute; right:4px; top:4px; width:46px; height:46px; border:0; background:none; font-size:19px; cursor:pointer; color:#888; }
+
+.filelbl{position:relative;display:block;text-align:center;overflow:hidden;cursor:pointer}
+.filein{position:absolute;inset:0;width:100%;height:100%;opacity:0;font-size:16px;cursor:pointer}
