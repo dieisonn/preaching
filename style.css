@@ -166,3 +166,10 @@ html[data-theme=dark] .login input { background:#2a262c; color:var(--txt); } htm
 html[data-theme=dark] .login label.f { color:var(--mut); }
 html[data-theme=dark] .tg { background:#555; } html[data-theme=dark] .btn.flat { color:var(--pink-d); }
 html[data-theme=dark] .drawer svg { fill:var(--mut); }
+
+#undo { position:fixed; left:50%; bottom:92px; transform:translate(-50%,20px); background:#333; color:#fff; padding:6px 6px 6px 16px; border-radius:24px; display:flex; align-items:center; gap:10px; opacity:0; pointer-events:none; transition:.25s; z-index:101; max-width:92vw; font-size:14px; }
+#undo.show { opacity:.97; transform:translate(-50%,0); pointer-events:auto; }
+#undo button { background:none; border:0; color:#ff9ec7; font-weight:700; text-transform:uppercase; padding:10px 12px; font-size:13px; cursor:pointer; }
+#map { height:calc(100dvh - 270px); min-height:280px; border-radius:10px; overflow:hidden; background:#ddd; z-index:0; }
+.leaflet-container { font:inherit; }
+html[data-theme=dark] .leaflet-popup-content-wrapper, html[data-theme=dark] .leaflet-popup-tip { background:var(--card); color:var(--txt); }

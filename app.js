@@ -41,6 +41,7 @@ const ICON = {
   logout: '<svg viewBox="0 0 24 24"><path d="M17 7l-1.400 1.400L18.200 11H8v2h10.200l-2.600 2.600L17 17l5-5zM4 5h8V3H4a2 2 0 00-2 2v14a2 2 0 002 2h8v-2H4z"/></svg>',
   user: '<svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 100-8 4 4 0 000 8zm0 2c-2.700 0-8 1.300-8 4v2h16v-2c0-2.700-5.300-4-8-4z"/></svg>',
   share: '<svg viewBox="0 0 24 24"><path d="M18 16.1c-.8 0-1.5.3-2 .8l-7.1-4.2c.1-.2.1-.5.1-.7s0-.5-.1-.7L16 7.2c.5.5 1.2.8 2 .8a3 3 0 10-3-3c0 .2 0 .5.1.7L8 9.8A3 3 0 106 9a3 3 0 000 6c.8 0 1.5-.3 2-.8l7.1 4.2c-.1.2-.1.4-.1.6a2.9 2.9 0 102.900-2.900z"/></svg>',
+  locate: '<svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 100 8 4 4 0 000-8zm8.94 3A8.994 8.994 0 0013 3.06V1h-2v2.06A8.994 8.994 0 003.06 11H1v2h2.06A8.994 8.994 0 0011 20.94V23h2v-2.06A8.994 8.994 0 0020.94 13H23v-2zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>',
   book: '<svg viewBox="0 0 24 24"><path d="M21 5c-1.100-.4-2.300-.5-3.500-.5-1.900 0-4.100.4-5.500 1.500-1.400-1.100-3.600-1.500-5.500-1.500S2.500 4.900 1 6v14.600c0 .3.300.5.500.5.100 0 .2 0 .3-.1 1.100-.7 3-1.300 4.700-1.300 1.900 0 4.100.4 5.500 1.500 1.300-.9 3.800-1.500 5.500-1.500 1.700 0 3.600.6 4.700 1.300.1.100.2.100.3.100.3 0 .5-.2.5-.5V6c-.6-.4-1.200-.7-2-1z"/></svg>',
 };
 
@@ -117,7 +118,16 @@ async function save(kind, obj) {
   cacheSave();
   return saved;
 }
-async function remove(kind, id) {
+const KIND_NAME = { time: 'Tempo', report: 'Relatório', person: 'Interessado', visit: 'Visita', territory: 'Território', plan: 'Planejamento' };
+let undoTimer, lastRem = { t: 0, items: [] };
+function showUndo(label, restore) {
+  let el = $('#undo'); if (!el) { el = document.createElement('div'); el.id = 'undo'; document.body.appendChild(el); }
+  el.innerHTML = `<span>${esc(label)}</span><button type="button">Desfazer</button>`; el.classList.add('show');
+  el.querySelector('button').onclick = async () => { el.classList.remove('show'); try { await restore(); render(); } catch (e) { toast(e.message || 'Erro'); } };
+  clearTimeout(undoTimer); undoTimer = setTimeout(() => el.classList.remove('show'), 7000);
+}
+async function remove(kind, id, opts = {}) {
+  const obj = S[kind].find(x => x.id === id), vs = kind === 'person' ? S.visit.filter(v => v.personId === id) : [];
   await exec({ t: 'del', id });
   S[kind] = S[kind].filter(x => x.id !== id);
   if (kind === 'person') {
@@ -125,6 +135,12 @@ async function remove(kind, id) {
     S.visit = S.visit.filter(v => v.personId !== id);
   }
   cacheSave();
+  if (obj && !opts.silent) {
+    if (Date.now() - lastRem.t > 1500) lastRem = { t: 0, items: [] };
+    lastRem.t = Date.now(); lastRem.items.push({ kind, obj }, ...vs.map(v => ({ kind: 'visit', obj: v })));
+    const items = lastRem.items, n = items.filter(i => i.kind === kind).length;
+    showUndo(items.length > 1 ? `${items.length} itens apagados` : `${KIND_NAME[kind]} apagado`, async () => { for (const i of items) await save(i.kind, i.obj); lastRem = { t: 0, items: [] }; });
+  }
 }
 async function saveSettings(patch) {
   const next = { ...S.settings, ...patch };
@@ -196,7 +212,9 @@ function monthStats(mk) {
   const min = t.length ? t.filter(x => !x.ldc).reduce((a, x) => a + Number(x.minutes), 0) : Number(rep.hm || 0);
   const visits = S.visit.filter(v => monthKey(v.date) === mk);
   const has = k => visits.filter(v => (v.kinds || []).includes(k)).length;
-  return { ministry: min, ldc, total: min + ldc, studies: Number(rep.studies || 0), visits: visits.length, revisitas: visits.length ? has('revisita') : Number(rep.rv || 0), estudos: has('estudo') || Number(rep.studies || 0), videos: visits.length ? has('video') : Number(rep.videos || 0), rep };
+  const studiesAuto = new Set(visits.filter(v => (v.kinds || []).includes('estudo')).map(v => v.personId)).size;
+  const stu = rep.studiesSet ? Number(rep.studies || 0) : (studiesAuto || Number(rep.studies || 0));
+  return { ministry: min, ldc, total: min + ldc, studies: stu, studiesAuto, visits: visits.length, revisitas: visits.length ? has('revisita') : Number(rep.rv || 0), estudos: stu, videos: visits.length ? has('video') : Number(rep.videos || 0), rep };
 }
 const progressBar = (done, goal) => { const p = goal > 0 ? Math.min(100, Math.round(done / goal * 100)) : 0; return `<div class="pbar" role="progressbar" aria-valuenow="${p}" aria-valuemin="0" aria-valuemax="100"><i style="width:${p}%"></i></div><div class="sub" style="display:flex;justify-content:space-between"><span>${fmtNum(done)}h de ${fmtNum(goal)}h</span><span>${p}%</span></div>`; };
 function yearStats(sy) { // ano de serviço: set (sy-1) → ago (sy)
@@ -210,6 +228,43 @@ function yearStats(sy) { // ano de serviço: set (sy-1) → ago (sy)
   const daysLeft = current ? total - elapsed + 1 : 0;
   const left = Math.max(0, goal - done);
   return { goal, done, left, daysLeft, current, perDay: daysLeft ? left / daysLeft : 0, perMonth: daysLeft ? left / (daysLeft / 30.4) : 0, projected: current && elapsed > 14 ? done / elapsed * total : null };
+}
+function weekRange() { const ws = S.settings.weekStart === 1 ? 1 : 0, d = new Date(); d.setHours(0, 0, 0, 0); const off = (d.getDay() - ws + 7) % 7; const a = new Date(d); a.setDate(d.getDate() - off); const b = new Date(a); b.setDate(a.getDate() + 6); return [ymd(a), ymd(b)]; }
+function streaks() {
+  const ds = [...new Set(S.time.filter(t => Number(t.minutes) > 0).map(t => t.date))].sort(), set = new Set(ds);
+  let best = 0, run = 0, prev = null;
+  ds.forEach(d => { run = prev && Math.round((parseYmd(d) - parseYmd(prev)) / 864e5) === 1 ? run + 1 : 1; if (run > best) best = run; prev = d; });
+  const d = new Date(); if (!set.has(ymd(d))) d.setDate(d.getDate() - 1);
+  let cur = 0; while (set.has(ymd(d))) { cur++; d.setDate(d.getDate() - 1); }
+  return { cur, best };
+}
+function paceCard(mk, st, goal, daysLeft) {
+  if (!goal) return '';
+  const done = dayMinutes(), todayMin = done[today()] || 0;
+  const leftBefore = Math.max(0, goal - hoursOf(st.total) + hoursOf(todayMin)), target = leftBefore / Math.max(daysLeft, 1);
+  const [a, b] = weekRange(); let wk = 0; Object.entries(done).forEach(([d, m]) => { if (d >= a && d <= b) wk += m; });
+  const dim = new Date(+mk.slice(0, 4), +mk.slice(5), 0).getDate(), wGoal = S.settings.weeklyGoal != null ? Number(S.settings.weeklyGoal) : goal * 7 / dim, sk = streaks();
+  return `<div class="card"><h2>Hoje e esta semana</h2>
+    <div class="sub">Hoje · meta que se ajusta ao que falta</div>${target > 0 ? progressBar(hoursOf(todayMin), target) : '<div style="margin:4px 0">Alvo do mês já atingido 🎉</div>'}
+    <div class="sub" style="margin-top:10px;display:flex;justify-content:space-between"><span>Semana · meta de ${fmtNum(wGoal)}h</span><button class="pen" data-act="edit-wgoal">✎</button></div>${progressBar(hoursOf(wk), wGoal)}
+    <div class="sub" style="margin-top:8px">Dias seguidos de serviço: <b>${sk.cur}</b> · melhor sequência: <b>${sk.best}</b></div></div>`;
+}
+function compareYear(sy) { // mesmo período do ano de serviço anterior
+  const months = i => Array.from({ length: 12 }, (_, k) => addMonths(`${sy - 1 - i}-09`, k));
+  const curMk = monthKey(today()), isCur = serviceYearOf(curMk) === sy;
+  const n = isCur ? months(0).indexOf(curMk) + 1 : 12;
+  const sum = ms => ms.slice(0, n).reduce((a, mk) => a + hoursOf(monthStats(mk).total), 0);
+  const a = sum(months(0)), b = sum(months(1)); if (!a && !b) return '';
+  const diff = a - b, label = n === 12 ? 'ano inteiro' : `${MES_CURTO[+months(0)[0].slice(5) - 1]} a ${MES_CURTO[+months(0)[n - 1].slice(5) - 1]}`;
+  const days = new Set(S.time.filter(t => serviceYearOf(monthKey(t.date)) === sy && Number(t.minutes) > 0).map(t => t.date)), mins = S.time.filter(t => serviceYearOf(monthKey(t.date)) === sy).reduce((x, t) => x + Number(t.minutes), 0);
+  const sk = streaks();
+  return `<div class="card"><h2>Estatísticas</h2>
+    <div class="row"><span>Este ano (${label})</span><span class="v">${fmtNum(a)}h</span></div>
+    <div class="row"><span>Ano anterior (mesmo período)</span><span class="v">${fmtNum(b)}h</span></div>
+    <div class="row"><span>Diferença</span><span class="v" style="color:${diff >= 0 ? '#2a7d4f' : '#d32f2f'}">${diff >= 0 ? '+' : ''}${fmtNum(diff)}h</span></div>
+    <div class="row"><span>Dias com serviço</span><span class="v">${days.size}</span></div>
+    <div class="row"><span>Média por dia trabalhado</span><span class="v">${days.size ? fmtDur(mins / days.size) : '—'}</span></div>
+    <div class="row"><span>Dias seguidos agora / melhor</span><span class="v">${sk.cur} / ${sk.best}</span></div></div>`;
 }
 function yearCard(sy) {
   const y = yearStats(sy); if (!y.goal) return '';
@@ -254,7 +309,7 @@ const go = h => { location.hash = '#/' + h; };
 
 function shell({ title, left = 'menu', right = '', body, fab = '', tabs = true, titleHtml }) {
   const r = route();
-  const active = r.name === 'chart' ? 'report' : r.name === 'person' ? 'people' : r.name;
+  const active = r.name === 'chart' ? 'report' : (r.name === 'person' || r.name === 'map') ? 'people' : r.name;
   return `<header class="bar">
     <button class="ib" data-act="${left === 'menu' ? 'drawer' : 'back'}" aria-label="${left === 'menu' ? 'Menu' : 'Voltar'}">${left === 'menu' ? ICON.menu : ICON.back}</button>
     <div class="hdr-wrap" style="flex:1;min-width:0">${titleHtml || `<h1>${esc(title)}</h1>`}</div>${right}</header>
@@ -285,6 +340,7 @@ function viewHome() {
     ${showTimer ? `<div class="card"><h2>Cronômetro de serviço</h2><div class="timer">
       <button class="circ" data-act="timer-toggle" id="tbtn">${timer.running() ? ICON.pause : ICON.play}</button><span class="t" id="tclock">${fmtClock(timer.elapsed())}</span>
       <button class="circ" data-act="timer-stop">${ICON.stop}</button></div></div>` : ''}
+    <div class="card"><h2>Lançamento rápido<span class="sub">hoje</span></h2><div class="chips" style="margin:0">${[15, 30, 60, 120].map(m => `<button class="chip" data-act="quick" data-m="${m}">+${m < 60 ? m + ' min' : m / 60 + ' h'}</button>`).join('')}</div></div>
     <div class="card"><h2>Estatísticas da pregação</h2><div style="display:flex;justify-content:space-between;align-items:center"><span class="sub">${monthLabel(mk)}</span><span class="big">${st.visits} visita${st.visits === 1 ? '' : 's'}</span></div>
       <div class="stats4"><div>${ICON.people}<b>${st.revisitas}</b><span class="sub">revisitas</span></div><div>${ICON.book}<b>${st.estudos}</b><span class="sub">estudos</span></div><div>${ICON.chart}<b>${st.videos}</b><span class="sub">vídeos</span></div><div>${ICON.user}<b>${nextVisits}</b><span class="sub">interessados</span></div></div></div>
     <div class="card"><h2>Relatório do mês atual<span class="sub">${monthLabel(mk)}</span></h2>
@@ -295,6 +351,7 @@ function viewHome() {
     ${reminderCard()}
     ${goal ? `<div class="card"><h2>Alvo de horas mensal</h2>${progressBar(hoursOf(st.total), goal)}<div class="row" style="margin-top:6px"><span class="sub">Faltam para o alvo de ${goal} horas</span><span class="big">${fmtNum(left)}h</span></div>
       <div class="sub">${left > 0 ? `Cerca de ${fmtNum(left / daysLeft)}h por dia nos ${daysLeft} dias restantes.` : 'Alvo atingido! 🎉'}</div></div>` : ''}
+    ${paceCard(mk, st, goal, daysLeft)}
     ${yearCard(serviceYearOf(mk))}
     ${(() => { const wv = weekVisits(); return wv.length ? `<div class="card"><h2>Visitar esta semana<span class="sub">${wv.length}</span></h2>${wv.slice(0, 6).map(p => `<div class="row" data-act="open-person" data-id="${p.id}" style="cursor:pointer"><span>${esc(p.name)}</span><span class="${p.nextVisit < today() ? 'red' : 'sub'}">${p.nextVisit < today() ? 'atrasada · ' : ''}${esc(fmtDateLong(p.nextVisit).split(' de ').slice(0, 2).join(' de '))}</span></div>`).join('')}</div>` : ''; })()}
     <div class="card"><h2>Sugestões</h2><a class="sub" href="#/backup" style="text-decoration:none"><b style="color:var(--blue)">Fazer uma cópia de segurança</b><br>Exporte seus dados para mantê-los a salvo.</a></div>`,
@@ -316,14 +373,16 @@ function viewReport() {
       <div class="row"><span>Total de horas</span><span class="v">${fmtDur(st.total)}</span></div>
       <div class="row sub" style="padding-left:12px"><span>Horas no ministério</span><span class="v">${fmtDur(st.ministry)}</span></div>
       <div class="row sub" style="padding-left:12px"><span>Horas no LDC</span><span class="v">${fmtDur(st.ldc)}</span></div>
-      <div class="row"><span>Estudos Individuais <button class="pen" data-act="edit-studies">✎</button></span><span class="v">${st.studies}</span></div>
+      <div class="row"><span>Estudos bíblicos <button class="pen" data-act="edit-studies">✎</button></span><span class="v">${st.studies}</span></div>
+      ${st.studiesAuto && !(st.rep && st.rep.studiesSet) ? '<div class="sub" style="margin-top:-4px">Contados pelas visitas de estudo do mês (toque no lápis para ajustar).</div>' : ''}
       <div class="sec">Objetivo do mês <button class="pen" data-act="edit-goal">✎</button></div>
       <div class="row"><span>Horas</span><span class="v">${goal}</span></div>
       <div class="row"><span>Horas que faltam fazer</span><span class="v">${fmtNum(left)}</span></div>
       <div class="row"><span>Horas restantes por dia</span><span class="v ${perDay > 3 ? 'red' : ''}">${fmtNum(perDay)}</span></div>
       ${goal ? `<div style="margin-top:6px">${progressBar(hoursOf(st.total), goal)}</div>` : ''}
       <div class="sec">Perfil <button class="pen" data-act="edit-profile">✎</button></div><div>${esc(profileName(profile()))}</div>
-      <div style="margin-top:20px"><button class="btn full" data-act="share">Compartilhar relatório</button></div>
+      <div style="margin-top:20px"><button class="btn full" data-act="share">Compartilhar texto</button></div>
+      <div style="margin-top:8px"><button class="btn flat full" data-act="share-pdf">Gerar PDF do relatório</button></div>
       <div style="margin-top:10px"><button class="btn flat full" data-act="toggle-sent">${(S.settings.sent || {})[reportMonth] ? '✓ Relatório enviado (desfazer)' : 'Marcar como enviado'}</button></div>`;
   } else if (reportTab === 'list') {
     const items = S.time.filter(x => monthKey(x.date) === reportMonth).sort((a, b) => b.date.localeCompare(a.date));
@@ -335,7 +394,7 @@ function viewReport() {
     const rows = months.map(mk => { const s = monthStats(mk); tot += s.total; ld += s.ldc; stu += s.studies;
       return `<div class="row"><span style="text-transform:capitalize">${MESES[+mk.slice(5) - 1]}</span><span class="v">${fmtDur(s.total)}${s.studies ? ` · ${s.studies} est.` : ''}</span></div>`; }).join('');
     body = `<div class="monthnav"><button data-act="yprev">‹</button><b>Ano de serviço ${sy}</b><button data-act="ynext">›</button></div>
-      ${yearCard(sy)}<div class="card">${rows}<div class="row" style="border-top:1px solid var(--line);font-weight:700"><span>Total</span><span class="v">${fmtDur(tot)}</span></div>
+      ${yearCard(sy)}${compareYear(sy)}<div class="card">${rows}<div class="row" style="border-top:1px solid var(--line);font-weight:700"><span>Total</span><span class="v">${fmtDur(tot)}</span></div>
       <div class="row sub"><span>Horas no LDC</span><span class="v">${fmtDur(ld)}</span></div><div class="row sub"><span>Estudos individuais</span><span class="v">${stu}</span></div></div>`;
   }
   return shell({
@@ -393,14 +452,15 @@ function viewChart() {
 }
 
 let peopleQuery = '', peopleSearchOpen = false, peopleFilter = 'all';
-const PFILTERS = [['all', 'Todos'], ['week', 'Visitar'], ['d30', 'Sem visita +30 dias'], ['d60', '+60 dias'], ['d90', '+90 dias']];
+const PFILTERS = [['all', 'Todos'], ['week', 'Visitar'], ['study', 'Estudos'], ['d30', 'Sem visita +30 dias'], ['d60', '+60 dias'], ['d90', '+90 dias']];
 function personVisits(id) { return S.visit.filter(v => v.personId === id).sort((a, b) => b.date.localeCompare(a.date)); }
 const personColor = id => PALETTE[[...id].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length];
 function viewPeople() {
   const q = peopleQuery.toLowerCase();
   let list = S.person.map(p => ({ ...p, last: (personVisits(p.id)[0] || {}).date || p.created || '', n: personVisits(p.id).length }));
   if (q) list = list.filter(p => [p.name, p.address, p.bairro, p.notes, p.phone].join(' ').toLowerCase().includes(q));
-  if (peopleFilter === 'week') { const ids = new Set(weekVisits().map(p => p.id)); list = list.filter(p => ids.has(p.id)); }
+  if (peopleFilter === 'study') list = list.filter(p => p.studying);
+  else if (peopleFilter === 'week') { const ids = new Set(weekVisits().map(p => p.id)); list = list.filter(p => ids.has(p.id)); }
   else if (/^d\d+$/.test(peopleFilter)) { const lim = ymd(new Date(Date.now() - +peopleFilter.slice(1) * 864e5)); list = list.filter(p => p.last && p.last <= lim); }
   const groups = {};
   list.forEach(p => { (groups[p.bairro || 'Outros'] ||= []).push(p); });
@@ -409,9 +469,9 @@ function viewPeople() {
     ${peopleSearchOpen ? `<div class="searchbar"><input type="search" id="pq" placeholder="Buscar nome, endereço, bairro…" value="${esc(peopleQuery)}"></div>` : ''}
     ${names.length ? names.map(n => `<div class="group">${esc(n)}</div><div class="list">${groups[n].sort((a, b) => b.last.localeCompare(a.last)).map(p => `
       <div class="item" data-act="open-person" data-id="${p.id}"><div class="avatar" style="background:${personColor(p.id)}">${esc((p.name || '?')[0].toUpperCase())}${p.n ? `<i>${p.n}</i>` : ''}</div>
-      <div class="mid"><div class="nm"><span>${esc(p.name)}</span><small>${p.last ? esc(fmtDateLong(p.last)) : ''}</small></div><div class="ad">${esc(p.address || '')}</div><div class="nt">${p.nextVisit ? `<span class="tag">Próx.: ${esc(p.nextVisit.split('-').reverse().slice(0, 2).join('/'))}</span>` : ''}${esc(p.notes || '')}</div></div>${p.address ? `<a class="mapbtn" href="${mapLink((p.address || '') + ' ' + (p.bairro || ''))}" target="_blank" rel="noopener" aria-label="Abrir no mapa">${ICON.map}</a>` : ''}</div>`).join('')}</div>`).join('')
+      <div class="mid"><div class="nm"><span>${esc(p.name)}</span><small>${p.last ? esc(fmtDateLong(p.last)) : ''}</small></div><div class="ad">${esc(p.address || '')}</div><div class="nt">${p.studying ? '<span class="tag">Estuda</span>' : ''}${p.nextVisit ? `<span class="tag">Próx.: ${esc(p.nextVisit.split('-').reverse().slice(0, 2).join('/'))}</span>` : ''}${esc(p.notes || '')}</div></div>${p.address ? `<a class="mapbtn" href="${mapLink((p.address || '') + ' ' + (p.bairro || ''))}" target="_blank" rel="noopener" aria-label="Abrir no mapa">${ICON.map}</a>` : ''}</div>`).join('')}</div>`).join('')
       : `<div class="empty">${peopleFilter !== 'all' || q ? 'Nenhum interessado neste filtro.' : 'Nenhum interessado ainda.<br>Toque no botão + para adicionar.'}</div>`}`;
-  return shell({ title: 'Interessados', right: `<button class="ib" data-act="people-search">${ICON.search}</button><button class="ib" data-act="add-person">${ICON.user}</button>`, body });
+  return shell({ title: 'Interessados', right: `<button class="ib" data-act="go-map" aria-label="Mapa">${ICON.map}</button><button class="ib" data-act="people-search">${ICON.search}</button><button class="ib" data-act="add-person">${ICON.user}</button>`, body });
 }
 function mapLink(addr) {
   const q = encodeURIComponent(addr);
@@ -428,6 +488,7 @@ function viewPerson(id) {
     body: `<div class="card"><div class="row"><span class="sub">Endereço</span></div><div>${esc(p.address || '—')}${p.bairro ? ` <span class="tag">${esc(p.bairro)}</span>` : ''}</div>
       ${p.address ? `<p><a class="btn flat" href="${mapLink((p.address || '') + ' ' + (p.bairro || ''))}" target="_blank" rel="noopener">${IS_IOS && !S.settings.osm ? 'Abrir no Mapas' : 'Abrir no mapa'}</a></p>` : ''}
       ${p.phone ? `<div class="row"><span class="sub">Telefone</span></div><div><a class="btn flat" href="tel:${esc(p.phone)}">Ligar ${esc(p.phone)}</a></div>` : ''}
+      ${p.studying ? '<div><span class="tag">Estuda a Bíblia</span></div>' : ''}
       ${p.nextVisit ? `<div class="row"><span class="sub">Próxima visita</span></div><div class="${p.nextVisit < today() ? 'red' : ''}">${esc(fmtDateLong(p.nextVisit))}</div>` : ''}
       ${p.notes ? `<div class="row"><span class="sub">Anotações</span></div><div style="white-space:pre-wrap">${esc(p.notes)}</div>` : ''}</div>
       <div class="sec">Visitas (${vs.length})</div>
@@ -435,6 +496,55 @@ function viewPerson(id) {
       <p><button class="btn danger flat" style="color:#c0392b" data-act="del-person" data-id="${id}">Apagar interessado</button></p>`,
     fab: `<button class="fab" data-act="add-visit" data-id="${id}">+</button>`,
   });
+}
+
+// ---------- mapa dos interessados (OpenStreetMap + Leaflet) ----------
+let mapObj = null, mapFilter = 'all', mapSession = 0, mapUser = null;
+const geoQ = p => [p.address, p.bairro, S.settings.city].filter(Boolean).join(', ');
+const dirLink = (la, ln) => S.settings.osm ? `https://www.openstreetmap.org/directions?to=${la},${ln}` : IS_IOS ? `https://maps.apple.com/?daddr=${la},${ln}` : `https://www.google.com/maps/dir/?api=1&destination=${la},${ln}`;
+const mapPeople = () => { const base = S.person.filter(p => p.address); if (mapFilter === 'week') { const w = new Set(weekVisits().map(p => p.id)); return base.filter(p => w.has(p.id)); } return base; };
+async function geocode(p) {
+  const q = geoQ(p);
+  const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=br&accept-language=pt-BR&q=' + encodeURIComponent(q));
+  if (!r.ok) throw new Error('Sem conexão com a internet');
+  const j = await r.json();
+  return j[0] ? { lat: +j[0].lat, lng: +j[0].lon, q } : { fail: true, q };
+}
+function viewMap() {
+  return shell({ left: 'back', title: 'Mapa', right: `<button class="ib" data-act="map-locate" aria-label="Onde estou">${ICON.locate}</button>`, body: `
+    <div class="chips">${[['all', 'Todos'], ['week', 'Visitar esta semana']].map(([k, l]) => `<button class="chip ${mapFilter === k ? 'on' : ''}" data-act="mfilter" data-v="${k}">${l}</button>`).join('')}</div>
+    <div id="map"></div><div class="sub" id="mapstat" style="padding:8px 2px"></div>
+    <div class="sub">Rosa: interessado · roxo: visita nesta semana · vermelho: visita atrasada.${S.settings.city ? '' : ' Dica: defina a cidade em Configurações para achar os endereços com mais precisão.'}</div>` });
+}
+async function initMap() {
+  const el = $('#map'); if (!el) return;
+  if (typeof L === 'undefined') { el.innerHTML = '<div class="empty">O mapa precisa de internet na primeira abertura.</div>'; return; }
+  const my = ++mapSession, st = $('#mapstat');
+  mapObj = L.map(el).setView([-14.2, -51.9], 4);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(mapObj);
+  const layer = L.layerGroup().addTo(mapObj), wk = new Set(weekVisits().map(p => p.id)); let fitted = false;
+  const ok = p => p.geo && !p.geo.fail && p.geo.q === geoQ(p);
+  const draw = () => {
+    layer.clearLayers(); const pts = [];
+    mapPeople().filter(ok).forEach(p => {
+      const color = p.nextVisit && p.nextVisit < today() ? '#d32f2f' : wk.has(p.id) ? '#8e3a8a' : '#e8508e';
+      L.circleMarker([p.geo.lat, p.geo.lng], { radius: 9, color: '#fff', weight: 2, fillColor: color, fillOpacity: .95 }).addTo(layer)
+        .bindPopup(`<b>${esc(p.name)}</b><br>${esc(p.address || '')}<br><a href="#/person/${p.id}">Abrir</a> · <a href="${dirLink(p.geo.lat, p.geo.lng)}" target="_blank" rel="noopener">Como chegar</a>`);
+      pts.push([p.geo.lat, p.geo.lng]);
+    });
+    if (pts.length && !fitted) { mapObj.fitBounds(pts, { padding: [30, 30], maxZoom: 16 }); fitted = true; }
+    const all = mapPeople(), failed = all.filter(p => p.geo && p.geo.fail && p.geo.q === geoQ(p)).length;
+    if (st) st.innerHTML = all.length ? `${pts.length} de ${all.length} no mapa${failed ? ` · ${failed} endereço${failed === 1 ? '' : 's'} não encontrado${failed === 1 ? '' : 's'} <button class="btn flat" data-act="map-retry">Tentar de novo</button>` : ''}` : 'Nenhum interessado com endereço.';
+  };
+  draw();
+  for (const p of mapPeople().filter(p => !p.geo || p.geo.q !== geoQ(p))) {
+    if (my !== mapSession || !mapObj) return;
+    if (st) st.textContent = `Localizando endereços… ${p.name}`;
+    try { await save('person', { ...p, geo: await geocode(p) }); } catch (e) { if (isNet(e)) { if (st) st.textContent = 'Sem internet para localizar novos endereços.'; return; } }
+    if (my !== mapSession) return; draw();
+    await new Promise(r => setTimeout(r, 1100)); // limite do serviço gratuito: 1 consulta por segundo
+  }
+  if (my === mapSession) draw();
 }
 
 function viewTerritory() {
@@ -536,6 +646,7 @@ function viewSettings() {
       <div class="row"><div>Perfil<div class="sub">${esc(profileName(profile()))}</div></div><button class="btn flat" data-act="edit-profile">Alterar</button></div>
       <div class="row"><div>Cronômetro de serviço<div class="sub">Mostrar cartão de horas</div></div>${tg('timer', S.settings.timer !== false)}</div>
       <div class="row"><div>Primeiro dia da semana<div class="sub">Ligado = domingo; desligado = segunda</div></div>${tg('sunday', S.settings.weekStart !== 1)}</div>
+      <div class="row"><div>Cidade para o mapa<div class="sub">${esc(S.settings.city || 'não definida')}</div></div><button class="btn flat" data-act="edit-city">Alterar</button></div>
       <div class="row"><div>Usar o Open Street Map<div class="sub">Em vez do app Mapas / Google Maps</div></div>${tg('osm', !!S.settings.osm)}</div></div>
     <div class="card"><h2>Aparência e segurança</h2>
       <div class="row"><div>Tema</div><div class="seg2">${[['auto', 'Auto'], ['light', 'Claro'], ['dark', 'Escuro']].map(([k, l]) => `<button class="${getTheme() === k ? 'on' : ''}" data-act="theme" data-v="${k}">${l}</button>`).join('')}</div></div>
@@ -571,12 +682,14 @@ function render() {
   if (!CONFIGURED) { app.innerHTML = '<div class="login"><h1>Falta configurar</h1><p class="sub">Edite o arquivo <b>config.js</b> com a URL e a chave anon do seu projeto Supabase (veja o README).</p></div>'; return; }
   if (!S.token || !S.user) { app.innerHTML = viewLogin(loginMode); return; }
   const r = route();
-  const views = { home: viewHome, report: viewReport, chart: viewChart, people: viewPeople, territory: viewTerritory, agenda: viewAgenda, help: viewHelp, backup: viewBackup, settings: viewSettings };
+  const views = { map: viewMap, home: viewHome, report: viewReport, chart: viewChart, people: viewPeople, territory: viewTerritory, agenda: viewAgenda, help: viewHelp, backup: viewBackup, settings: viewSettings };
+  if (mapObj) { mapSession++; try { mapObj.remove(); } catch { /* já removido */ } mapObj = null; }
   const scroll = $('#main')?.scrollTop || 0;
   app.innerHTML = (r.name === 'person' ? viewPerson(r.arg) : (views[r.name] || viewHome)()) + (drawerOpen ? drawerHtml() : '') + (menuOpen === 'report' ? `<div class="scrim" style="background:transparent" data-act="close-menus"></div><div class="drop" style="position:absolute;top:56px">
     <a data-act="go-chart">Gráfico anual</a><a data-act="go-year">Ano de serviço</a></div>` : '');
   if ($('#main')) $('#main').scrollTop = scroll;
   const pq = $('#pq'); if (pq) { pq.oninput = e => { peopleQuery = e.target.value; const pos = e.target.selectionStart; render(); const n = $('#pq'); n.focus(); n.setSelectionRange(pos, pos); }; }
+  if (r.name === 'map') initMap();
   if (r.name === 'settings') refreshPush();
   if (r.name === 'backup' && bkList === null && navigator.onLine) loadBackups();
   clearInterval(tickInterval);
@@ -611,6 +724,7 @@ function personDialog(p) {
     fields: [{ name: 'name', label: 'Nome', value: p.name, required: true }, { name: 'address', label: 'Endereço', value: p.address },
       { name: 'bairro', label: 'Bairro', value: p.bairro }, { name: 'phone', label: 'Telefone', type: 'tel', value: p.phone },
       { name: 'nextVisit', label: 'Próxima visita (opcional)', type: 'date', value: p.nextVisit },
+      { name: 'studying', label: 'Estuda a Bíblia', type: 'check', value: p.studying },
       { name: 'notes', label: 'Anotações', type: 'textarea', value: p.notes }],
     onSubmit: async v => { await save('person', { ...p, ...v, name: v.name.trim(), created: p.created || today(), maId: p.maId || randomLongStr() }); render(); },
   }).then(r => { const l = $('#bl'); if (l) l.remove(); return r; });
@@ -626,8 +740,13 @@ function visitDialog(personId, v) {
     onSubmit: async f => {
       await save('visit', { ...v, personId, date: f.date, note: f.note, kinds: VISIT_KINDS.map(x => x[0]).filter(k => f['k_' + k]) });
       const p = S.person.find(x => x.id === personId);
-      if (p && (f.next || '') !== (p.nextVisit || '')) await save('person', { ...p, nextVisit: f.next || '' });
-      else if (p && !v.id && p.nextVisit && !f.next && p.nextVisit <= f.date) await save('person', { ...p, nextVisit: '' });
+      if (p) {
+        const patch = {};
+        if ((f.next || '') !== (p.nextVisit || '')) patch.nextVisit = f.next || '';
+        else if (!v.id && p.nextVisit && !f.next && p.nextVisit <= f.date) patch.nextVisit = '';
+        if (f.k_estudo && !p.studying) patch.studying = true;
+        if (Object.keys(patch).length) await save('person', { ...p, ...patch });
+      }
       render();
     },
   });
@@ -685,8 +804,34 @@ async function profileDialog() {
     onSubmit: async v => { await saveSettings({ profile: v.profile }); render(); } });
 }
 function reportText(mk) {
-  const s = monthStats(mk);
-  return `Relatório de ${monthLabel(mk)}\nHoras: ${fmtDur(s.ministry).replace('h', '')}${s.ldc ? `\nHoras no LDC: ${fmtDur(s.ldc).replace('h', '')}` : ''}\nEstudos: ${s.studies}\nRevisitas: ${s.revisitas}\nVídeos mostrados: ${s.videos}`;
+  const s = monthStats(mk), nome = S.user && S.user.name && S.user.name !== S.user.username ? S.user.name : '';
+  const h = x => fmtDur(x).replace('h', '');
+  return [`Relatório de serviço — ${monthLabel(mk)}`, nome && `Nome: ${nome}`, `Horas: ${h(s.ministry)}`, s.ldc ? `Horas no LDC: ${h(s.ldc)}` : '', `Estudos bíblicos: ${s.studies}`, `Revisitas: ${s.revisitas}`, `Vídeos mostrados: ${s.videos}`, `Perfil: ${profileName(profile())}`].filter(Boolean).join('\n');
+}
+function pdfBytes(title, rows, footer) { // PDF simples (1 página A4, Helvetica) escrito à mão, sem bibliotecas
+  const map = { '—': '\\227', '–': '\\226', '•': '\\225', '“': '\\223', '”': '\\224', '’': '\\222' };
+  const esc2 = t => { let o = ''; for (const ch of String(t)) { const c = ch.charCodeAt(0); if (map[ch]) o += map[ch]; else if ('()\\'.includes(ch)) o += '\\' + ch; else if (c < 128) o += ch; else if (c < 256) o += '\\' + c.toString(8).padStart(3, '0'); else o += '?'; } return o; };
+  let y = 770, c = '';
+  const text = (t, x, size, bold) => { c += `BT /F${bold ? 2 : 1} ${size} Tf ${x} ${y} Td (${esc2(t)}) Tj ET\n`; };
+  text(title, 60, 20, true); y -= 14; c += `0.9 0.31 0.56 RG 2 w 60 ${y} m 535 ${y} l S\n0 0 0 RG\n`; y -= 34;
+  rows.forEach(r => { if (r.head) { y -= 8; text(r.head, 60, 13, true); y -= 8; c += `0.8 0.8 0.8 RG 0.5 w 60 ${y} m 535 ${y} l S\n`; y -= 20; return; } text(r[0], 60, 12, false); text(r[1], 400, 12, true); y -= 22; });
+  y = 60; text(footer, 60, 9, false);
+  const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>',
+    `<< /Length ${c.length} >>\nstream\n${c}endstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>'];
+  let out = '%PDF-1.4\n'; const off = [];
+  objs.forEach((o, i) => { off.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const xr = out.length; out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${off.map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xr}\n%%EOF`;
+  const u = new Uint8Array(out.length); for (let i = 0; i < out.length; i++) u[i] = out.charCodeAt(i) & 255; return u;
+}
+async function shareReportPdf(mk) {
+  const s = monthStats(mk), h = x => fmtDur(x).replace('h', ''), nome = S.user && S.user.name && S.user.name !== S.user.username ? S.user.name : '';
+  const rows = [['Nome', nome || '—'], ['Mês', monthLabel(mk)], ['Perfil', profileName(profile())], { head: 'Ministério' }, ['Horas', h(s.ministry)], ...(s.ldc ? [['Horas no LDC', h(s.ldc)]] : []), ['Total de horas', h(s.total)], { head: 'Atividade' },
+    ['Estudos bíblicos', String(s.studies)], ['Revisitas', String(s.revisitas)], ['Vídeos mostrados', String(s.videos)], ['Visitas registradas', String(s.visits)]];
+  const bytes = pdfBytes(`Relatório de serviço — ${monthLabel(mk)}`, rows, `Gerado por Meu relatório em ${new Date().toLocaleDateString('pt-BR')}`);
+  const file = new File([bytes], `Relatorio-${mk}.pdf`, { type: 'application/pdf' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: `Relatório ${monthLabel(mk)}` }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 function download(name, text) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
@@ -743,6 +888,7 @@ async function importMaModel(model, mode) {
   return { persons: newP.size, times: model.times.filter(t => !haveT.has(t.date)).length, reports: model.reports.filter(r => !haveR.has(r.month)).length };
 }
 function doLogout() {
+  stopRealtime();
   if (sb) sb.auth.signOut().catch(() => {});
   try { localStorage.removeItem(C_KEY); localStorage.removeItem(Q_KEY); } catch {}
   netBadge();
@@ -773,8 +919,8 @@ const actions = {
   mprev: () => { reportMonth = addMonths(reportMonth, -1); render(); }, mnext: () => { reportMonth = addMonths(reportMonth, 1); render(); },
   yprev: () => { reportMonth = addMonths(reportMonth, -12); render(); }, ynext: () => { reportMonth = addMonths(reportMonth, 12); render(); },
   'edit-studies': async () => { const cur = S.report.find(r => r.month === reportMonth) || { month: reportMonth };
-    await dialog({ title: 'Estudos individuais', fields: [{ name: 'n', label: 'Quantidade', type: 'number', min: 0, value: cur.studies || 0 }],
-      onSubmit: async v => { await save('report', { ...cur, studies: Number(v.n || 0) }); render(); } }); },
+    await dialog({ title: 'Estudos individuais', fields: [{ name: 'n', label: 'Quantidade', type: 'number', min: 0, value: monthStats(reportMonth).studies }],
+      onSubmit: async v => { await save('report', { ...cur, studies: Number(v.n || 0), studiesSet: true }); render(); } }); },
   'edit-goal': async () => { await dialog({ title: 'Objetivo do mês', fields: [{ name: 'g', label: `Horas em ${monthLabel(reportMonth)}`, type: 'number', min: 0, value: goalFor(reportMonth) }],
     extra: [{ label: 'Padrão', run: async () => { const g = { ...(S.settings.goals || {}) }; delete g[reportMonth]; await saveSettings({ goals: g }); render(); } }],
     onSubmit: async v => { await saveSettings({ goals: { ...(S.settings.goals || {}), [reportMonth]: Number(v.g || 0) } }); render(); } }); },
@@ -788,7 +934,21 @@ const actions = {
   'chart-metric': el => { chartMetric = el.dataset.v; chartMenu = null; render(); },
   'chart-year': el => { const y = +el.dataset.v; chartYears.has(y) ? chartYears.delete(y) : chartYears.add(y); render(); },
   'people-search': () => { peopleSearchOpen = !peopleSearchOpen; if (!peopleSearchOpen) peopleQuery = ''; render(); const q = $('#pq'); if (q) q.focus(); },
+  quick: el => guard(async () => {
+    const m = +el.dataset.m, d = today(), ex = S.time.find(t => t.date === d && !t.ldc && t.note === 'Rápido');
+    await save('time', ex ? { ...ex, minutes: Number(ex.minutes) + m } : { date: d, minutes: m, ldc: false, note: 'Rápido' });
+    render(); showUndo(`+${m < 60 ? m + ' min' : m / 60 + ' h'} lançado`, async () => { if (ex) await save('time', ex); else { const cur = S.time.find(t => t.date === d && !t.ldc && t.note === 'Rápido'); if (cur) await remove('time', cur.id, { silent: true }); } });
+  }),
+  'edit-wgoal': () => dialog({ title: 'Meta da semana', fields: [{ name: 'g', label: 'Horas por semana', type: 'number', step: 'any', min: 0, value: S.settings.weeklyGoal != null ? S.settings.weeklyGoal : '' }],
+    extra: [{ label: 'Padrão', run: async () => { const x = { ...S.settings }; await saveSettings({ weeklyGoal: null }); render(); } }],
+    onSubmit: async v => { await saveSettings({ weeklyGoal: v.g === '' ? null : Number(v.g) }); render(); } }),
+  'go-map': () => go('map'),
+  mfilter: el => { mapFilter = el.dataset.v; render(); },
+  'map-retry': () => guard(async () => { for (const p of S.person.filter(p => p.geo && p.geo.fail)) await save('person', { ...p, geo: null }); render(); }),
+  'map-locate': () => { if (!mapObj) return; if (!navigator.geolocation) return toast('Localização indisponível'); navigator.geolocation.getCurrentPosition(pos => { const ll = [pos.coords.latitude, pos.coords.longitude]; if (mapUser) mapUser.remove(); mapUser = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 3, fillColor: '#1e7bff', fillOpacity: 1 }).addTo(mapObj); mapObj.setView(ll, 15); }, () => toast('Permita a localização para ver onde você está')); },
+  'edit-city': () => dialog({ title: 'Cidade para o mapa', html: '<p class="sub">Usada para achar os endereços (ex.: Campinas, SP).</p>', fields: [{ name: 'c', label: 'Cidade e estado', value: S.settings.city }], onSubmit: async v => { await saveSettings({ city: String(v.c || '').trim() }); render(); } }),
   pfilter: el => { peopleFilter = el.dataset.v; render(); },
+  'share-pdf': () => guard(() => shareReportPdf(reportMonth)),
   'remind-share': el => { reportMonth = el.dataset.mk; return actions.share(); },
   'remind-done': async el => { await saveSettings({ sent: { ...(S.settings.sent || {}), [el.dataset.mk]: true } }); render(); toast('Marcado como enviado'); },
   'toggle-sent': async () => { const sent = { ...(S.settings.sent || {}) }; if (sent[reportMonth]) delete sent[reportMonth]; else sent[reportMonth] = true; await saveSettings({ sent }); render(); },
@@ -894,7 +1054,7 @@ document.addEventListener('submit', async e => {
       if (!session) { err.style.color = '#2a7d4f'; err.textContent = 'Conta criada! Confirme o e-mail que enviamos e depois entre.'; return; }
     } else session = must(await sb.auth.signInWithPassword({ email, password })).session;
     S.token = session.access_token; S.user = sessionUser(session);
-    await loadAll(); if (S.settings.displayName) S.user.name = S.settings.displayName; go('home'); render();
+    await loadAll(); if (S.settings.displayName) S.user.name = S.settings.displayName; startRealtime(); go('home'); render();
   } catch (ex) { err.style.color = ''; err.textContent = ex.message; } finally { btn.disabled = false; }
 });
 window.addEventListener('hashchange', () => { drawerOpen = false; menuOpen = null; chartMenu = null; render(); window.scrollTo(0, 0); });
@@ -907,6 +1067,32 @@ function applyTheme() {
 }
 applyTheme();
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
+
+// ---------- sincronização em tempo real entre aparelhos ----------
+let rtChan = null, rtTimer = null;
+function soon() {
+  cacheSave(); clearTimeout(rtTimer);
+  const tryRender = () => {
+    if (route().name === 'map') return;
+    if (document.querySelector('dialog[open]') || (document.activeElement && document.activeElement.matches('input,textarea,select'))) { rtTimer = setTimeout(tryRender, 1200); return; }
+    render();
+  };
+  rtTimer = setTimeout(tryRender, 250);
+}
+function onRec(pl) {
+  if (getQ().length || !S.user) return;
+  if (pl.eventType === 'DELETE') { const id = pl.old && pl.old.id; if (!id) return; let ch = false; KINDS.forEach(k => { const n = S[k].length; S[k] = S[k].filter(x => x.id !== id); if (S[k].length !== n) ch = true; }); if (ch) soon(); return; }
+  const n = pl.new; if (!n || n.user_id !== S.user.id || !KINDS.includes(n.kind)) return;
+  const obj = rowToObj(n), arr = S[n.kind], i = arr.findIndex(x => x.id === n.id);
+  if (i >= 0) { if (JSON.stringify(arr[i]) === JSON.stringify(obj)) return; arr[i] = obj; } else arr.push(obj);
+  soon();
+}
+function onSet(pl) { const n = pl.new; if (!n || !S.user || n.user_id !== S.user.id) return; if (JSON.stringify(S.settings) === JSON.stringify(n.data)) return; S.settings = n.data || {}; soon(); }
+function startRealtime() {
+  if (!sb || !sb.channel || rtChan || !S.user) return;
+  try { rtChan = sb.channel('sync-' + S.user.id).on('postgres_changes', { event: '*', schema: 'public', table: 'records' }, onRec).on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, onSet).subscribe(); } catch { rtChan = null; }
+}
+function stopRealtime() { if (rtChan && sb) { try { sb.removeChannel(rtChan); } catch { /* ok */ } } rtChan = null; }
 
 // ---------- notificações push ----------
 const urlB64 = b => { const p = '='.repeat((4 - b.length % 4) % 4), r = (b + p).replace(/-/g, '+').replace(/_/g, '/'), raw = atob(r); return Uint8Array.from([...raw].map(c => c.charCodeAt(0))); };
@@ -956,7 +1142,7 @@ let hiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { hiddenAt = Date.now(); return; }
   if (pinCfg() && hiddenAt && Date.now() - hiddenAt > 30000) showLock();
-  if (S.user) { flushQ().then(() => { if (route().name === 'home') render(); }); }
+  if (S.user) { const away = Date.now() - hiddenAt; flushQ().then(() => { if (away > 60000 && hiddenAt) return loadAll(); }).then(() => { if (!document.querySelector('dialog[open]') && route().name !== 'map') render(); }).catch(() => {}); }
 });
 window.addEventListener('online', () => { netBadge(); if (S.user) flushQ().then(() => loadAll().then(render).catch(() => {})); });
 window.addEventListener('offline', netBadge);
@@ -990,7 +1176,7 @@ function recoveryDialog() {
     });
     try {
       const { data } = await sb.auth.getSession();
-      if (data.session) { S.token = data.session.access_token; S.user = sessionUser(data.session); await loadAll(); if (S.settings.displayName) S.user.name = S.settings.displayName; setTimeout(autoBackup, 4000); }
+      if (data.session) { S.token = data.session.access_token; S.user = sessionUser(data.session); await loadAll(); if (S.settings.displayName) S.user.name = S.settings.displayName; setTimeout(autoBackup, 4000); startRealtime(); }
     } catch (e) { toast('Sem conexão com o servidor'); }
   }
   render();
