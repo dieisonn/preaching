@@ -541,6 +541,9 @@ function viewSettings() {
       <div class="row"><div>Tema</div><div class="seg2">${[['auto', 'Auto'], ['light', 'Claro'], ['dark', 'Escuro']].map(([k, l]) => `<button class="${getTheme() === k ? 'on' : ''}" data-act="theme" data-v="${k}">${l}</button>`).join('')}</div></div>
       <div class="row"><div>Bloqueio por PIN<div class="sub">${pinCfg() ? 'Ativado neste aparelho' : 'Pede um PIN de 4 dígitos ao abrir o app'}</div></div>
         <div>${pinCfg() ? '<button class="btn flat" data-act="pin-change">Alterar</button><button class="btn flat" data-act="pin-off">Desativar</button>' : '<button class="btn flat" data-act="pin-on">Ativar</button>'}</div></div></div>
+    <div class="card"><h2>Notificações</h2><p class="sub">Avisos no celular, mesmo com o app fechado: entregar o relatório do mês e visitas marcadas para hoje (por volta das 9h).</p>
+      ${pushOn ? '<button class="btn flat" data-act="push-test">Enviar teste</button><button class="btn flat" data-act="push-off">Desativar</button>' : '<button class="btn flat" data-act="push-on">Ativar notificações</button>'}
+      ${IS_IOS && !matchMedia('(display-mode: standalone)').matches ? '<div class="sub" style="margin-top:6px">No iPhone só funciona com o app instalado na Tela de Início (Safari → Compartilhar → Adicionar à Tela de Início).</div>' : ''}</div>
     <div class="card"><h2>Conta</h2><div class="sub">E-mail: <b>${esc(S.user.username)}</b></div>
       <div style="margin-top:8px"><button class="btn flat" data-act="edit-name">Alterar nome</button><button class="btn flat" data-act="change-pw">Alterar senha</button><button class="btn flat" data-act="change-email">Alterar e-mail</button></div></div>
     <div class="card"><h2>Zona de perigo</h2><p class="sub">Excluir a conta apaga para sempre todos os seus dados (horas, interessados, visitas, territórios, agenda).</p>
@@ -574,6 +577,7 @@ function render() {
     <a data-act="go-chart">Gráfico anual</a><a data-act="go-year">Ano de serviço</a></div>` : '');
   if ($('#main')) $('#main').scrollTop = scroll;
   const pq = $('#pq'); if (pq) { pq.oninput = e => { peopleQuery = e.target.value; const pos = e.target.selectionStart; render(); const n = $('#pq'); n.focus(); n.setSelectionRange(pos, pos); }; }
+  if (r.name === 'settings') refreshPush();
   if (r.name === 'backup' && bkList === null && navigator.onLine) loadBackups();
   clearInterval(tickInterval);
   if (r.name === 'home' && $('#tclock')) tickInterval = setInterval(() => { const c = $('#tclock'); if (c) c.textContent = fmtClock(timer.elapsed()); }, 1000);
@@ -807,6 +811,15 @@ const actions = {
     const d = must(await sb.from('backups').select('data').eq('id', el.dataset.id).single());
     toast('Restaurando…'); await importAll(d.data); await loadAll(); render(); toast('Cópia restaurada');
   }),
+  'push-on': () => guard(async () => { await pushEnable(); await refreshPush(); render(); toast('Notificações ativadas'); }),
+  'push-off': () => guard(async () => { await pushDisable(); pushOn = false; render(); toast('Notificações desativadas'); }),
+  'push-test': () => guard(async () => {
+    const { data: { session } } = await sb.auth.getSession();
+    const r = await fetch(CFG.SUPABASE_URL + '/functions/v1/send-reminders', { method: 'POST', headers: { Authorization: 'Bearer ' + session.access_token, apikey: CFG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, body: '{}' });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error('Falha ao enviar o teste');
+    toast(j.report && j.report[0] && j.report[0].sent ? 'Teste enviado — aguarde alguns segundos' : 'Não foi possível entregar (' + ((j.report && j.report[0] && (j.report[0].status || j.report[0].err)) || 'sem aparelho') + ')');
+  }),
   theme: el => { localStorage.setItem('mr_theme', el.dataset.v); applyTheme(); render(); },
   'pin-on': () => pinSetDialog(), 'pin-change': () => pinSetDialog(true),
   'pin-off': () => dialog({ title: 'Desativar PIN', ok: 'Desativar', fields: [{ name: 'p', label: 'PIN atual', type: 'password', inputmode: 'numeric' }],
@@ -894,6 +907,26 @@ function applyTheme() {
 }
 applyTheme();
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
+
+// ---------- notificações push ----------
+const urlB64 = b => { const p = '='.repeat((4 - b.length % 4) % 4), r = (b + p).replace(/-/g, '+').replace(/_/g, '/'), raw = atob(r); return Uint8Array.from([...raw].map(c => c.charCodeAt(0))); };
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+async function pushSub() { if (!pushSupported()) return null; const reg = await navigator.serviceWorker.ready; return reg.pushManager.getSubscription(); }
+async function pushEnable() {
+  if (!pushSupported()) throw new Error(IS_IOS ? 'No iPhone, instale o app na Tela de Início (iOS 16.4 ou mais) e abra por lá.' : 'Este navegador não suporta notificações.');
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('Permissão negada. Ative em Ajustes > Notificações > Meu relatório.');
+  const reg = await navigator.serviceWorker.ready;
+  const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64(CFG.VAPID_PUBLIC_KEY) });
+  const j = sub.toJSON();
+  must(await sb.from('push_subs').upsert({ user_id: S.user.id, endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Sao_Paulo' }, { onConflict: 'endpoint' }));
+}
+async function pushDisable() {
+  const sub = await pushSub(); if (!sub) return;
+  await sb.from('push_subs').delete().eq('endpoint', sub.endpoint); await sub.unsubscribe();
+}
+let pushOn = false;
+async function refreshPush() { try { const s = await pushSub(); const on = !!s && Notification.permission === 'granted'; if (on !== pushOn) { pushOn = on; if (route().name === 'settings') render(); } } catch { /* sem suporte */ } }
 
 // ---------- bloqueio por PIN (neste aparelho) ----------
 const PIN_KEY = 'mr_pin';
